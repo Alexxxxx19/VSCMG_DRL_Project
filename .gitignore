@@ -1,0 +1,13 @@
+# 1. 忽略 PyCharm 的私人配置
+.idea/
+
+# 2. 忽略 Python 的缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 3. 忽略未来的训练数据和日志 (但保留文件夹结构)
+checkpoints/*
+!checkpoints/**/.keep
+runs/
+*.log
