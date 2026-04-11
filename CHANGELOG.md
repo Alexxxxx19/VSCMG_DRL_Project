@@ -1,5 +1,14 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.4.0] - 核心训练管线 (Training Pipeline) 竣工
+**日期: 2026-04-11**
+
+### Added (新增)
+- **训练主程序**: 新增项目级入口文件 `train.py`，串联了 `VSCMGEnv` 环境与 `TD3` 算法大脑。
+- **训练监控**: 集成了 `tensorboard` 日志记录，支持实时追踪 `EpisodeReward` 与 `EpisodeLength`。
+- **权重检查点**: 实现基于最高得分 (Best Reward) 的动态模型权重自动保存机制 (`checkpoints/best_model.pth`)。
+
+---
 ## [v0.3.1] - 代码规范与 IDE 警告消除 (Zero Warnings)
 **日期: 2026-04-11**
 
