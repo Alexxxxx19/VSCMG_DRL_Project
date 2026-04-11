@@ -1,4 +1,3 @@
-import torch
 import numpy as np
 from agents.td3_agent import TD3, ReplayBuffer
 
@@ -27,7 +26,7 @@ def test_td3_sanity_check():
         critic_lr=3e-4,
         tau=0.005,
         gamma=0.99,
-        device=torch.device("cpu"),
+        device="cpu",
         delay=2
     )
 
@@ -47,6 +46,7 @@ def test_td3_sanity_check():
     print("Fake data pushed to ReplayBuffer. Starting update cycles...")
 
     # 4. 执行更新循环 (传入真正的 replay_buffer)
+    # noinspection PyBroadException
     try:
         # Step 1: Critic 应该更新，Actor 不更新 (假设 delay=2)
         agent.update(replay_buffer, batch_size)
@@ -63,7 +63,8 @@ def test_td3_sanity_check():
             f"take_action output shape: {action_output.shape}, bounds: [{action_output.min():.2f}, {action_output.max():.2f}]")
 
         print("\n✅ Sanity Check PASSED! The neural network graph is fully connected.")
-    except Exception as e:
+    # noinspection PyBroadException
+    except Exception:
         print("\n❌ Sanity Check FAILED. Error details:")
         import traceback
         traceback.print_exc()

@@ -1,5 +1,13 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.3.1] - 代码规范与 IDE 警告消除 (Zero Warnings)
+**日期: 2026-04-11**
+
+### Fixed (修复)
+- **代码规范**: 深度清理了 `tests/test_td3.py`, `geometry/pyramid_config.py` 与 `agents/td3_agent.py` 中的类型推导、命名规范及异常处理警告。
+- **类型兼容**: 修复了 `zip` 迭代器在 PyCharm 静态检查中的类型推导报错，达成全工程 Zero Warnings 状态，且回归测试（Sanity Check）通过。
+
+---
 ## [v0.3.0] - 核心算法大脑 (TD3 Agent) 竣工
 **日期: 2026-04-10**
 

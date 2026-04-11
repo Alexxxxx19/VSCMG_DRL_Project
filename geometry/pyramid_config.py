@@ -65,13 +65,13 @@ class PyramidVSCMG(BaseVSCMGArray):
         s4, c4 = np.sin(d4), np.cos(d4)
 
         # 构建自旋轴矩阵 [3 x 4]
-        A_s = np.array([
+        a_s = np.array([
             [-self.cos_beta * s1,  -c2,              self.cos_beta * s3,   c4             ],
             [ c1,                 -self.cos_beta * s2, -c3,                self.cos_beta * s4],
             [ self.sin_beta * s1,  self.sin_beta * s2,  self.sin_beta * s3,  self.sin_beta * s4]
         ])
 
-        return A_s
+        return a_s
 
     def get_transverse_matrix(self, delta: np.ndarray) -> np.ndarray:
         """
@@ -101,13 +101,13 @@ class PyramidVSCMG(BaseVSCMGArray):
         s4, c4 = np.sin(d4), np.cos(d4)
 
         # 构建横向轴矩阵 [3 x 4]
-        A_t = np.array([
+        a_t = np.array([
             [-self.cos_beta * c1,  s2,               self.cos_beta * c3,  -s4              ],
             [-s1,                 -self.cos_beta * c2,  s3,                self.cos_beta * c4],
             [ self.sin_beta * c1,  self.sin_beta * c2,  self.sin_beta * c3,  self.sin_beta * c4]
         ])
 
-        return A_t
+        return a_t
 
 
 # ==================== 测试模块 ====================

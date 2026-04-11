@@ -5,6 +5,7 @@ TD3 (Twin Delayed Deep Deterministic Policy Gradient) 算法实现
 
 import torch
 import torch.nn as nn
+# noinspection PyPep8Naming
 import torch.nn.functional as F
 import numpy as np
 import random
@@ -54,6 +55,7 @@ class ReplayBuffer:
             states, actions, rewards, next_states, dones (Tensor)
         """
         batch = random.sample(self.buffer, batch_size)
+        # noinspection PyArgumentList
         states, actions, rewards, next_states, dones = zip(*batch)
 
         states = torch.FloatTensor(np.array(states))
@@ -233,7 +235,7 @@ class TD3:
             net: 源网络
             target_net: 目标网络
         """
-        for param_target, param in zip(target_net.parameters(), net.parameters()):
+        for param_target, param in zip(list(target_net.parameters()), list(net.parameters())):
             param_target.data.copy_(self.tau * param.data + (1 - self.tau) * param_target.data)
 
     def update(self, replay_buffer: ReplayBuffer, batch_size: int):
