@@ -16,15 +16,15 @@ class SpacecraftDynamics:
     - 求解牛顿-欧拉方程
     """
 
-    def __init__(self, J_sc: np.ndarray):
+    def __init__(self, j_sc: np.ndarray):
         """
         初始化航天器动力学
 
         Args:
-            J_sc: 航天器本体转动惯量矩阵 [3 x 3]，单位：kg·m²
+            j_sc: 航天器本体转动惯量矩阵 [3 x 3]，单位：kg·m²
                   必须是对称正定矩阵
         """
-        self.J_sc = J_sc.astype(np.float64)
+        self.J_sc = j_sc.astype(np.float64)
 
         # 预计算惯量矩阵的逆，避免重复求逆
         self.J_sc_inv = np.linalg.inv(self.J_sc)
@@ -76,11 +76,11 @@ class SpacecraftDynamics:
             tau_external = tau_external.reshape(3, 1)
 
         # 1. 计算航天器自身陀螺力矩：τ_gyro_sc = ω × (J · ω)
-        J_omega = self.J_sc @ omega  # J · ω
-        tau_gyro_sc = self._cross_product(omega, J_omega)
+        j_omega = self.J_sc @ omega  # J · ω
+        tau_gyro_sc = np.cross(omega.flatten(), j_omega.flatten()).reshape(3, 1)
 
         # 2. 计算VSCMG牵连耦合力矩：τ_coup = ω × h_vscmg
-        tau_coupling = self._cross_product(omega, h_vscmg)
+        tau_coupling = np.cross(omega.flatten(), h_vscmg.flatten()).reshape(3, 1)
 
         # 3. 牛顿-欧拉方程：ω̇ = J⁻¹ · [τ_ext - τ_vscmg - τ_gyro_sc - τ_coup]
         total_torque = tau_external - tau_vscmg - tau_gyro_sc - tau_coupling
@@ -88,35 +88,6 @@ class SpacecraftDynamics:
 
         return omega_dot
 
-    @staticmethod
-    def _cross_product(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-        """
-        计算两个3D向量的叉积（向量积）
-
-        叉积的矩阵形式：a × b = [a]× · b
-        其中 [a]× 是反对称矩阵：
-        [a]× = [  0   -a_z   a_y  ]
-               [ a_z    0   -a_x  ]
-               [-a_y   a_x    0   ]
-
-        Args:
-            a: 第一个向量 [3 x 1]
-            b: 第二个向量 [3 x 1]
-
-        Returns:
-            叉积结果 [3 x 1]
-        """
-        a1, a2, a3 = a.flatten()
-        b1, b2, b3 = b.flatten()
-
-        # 叉积公式
-        cross = np.array([
-            [a2 * b3 - a3 * b2],
-            [a3 * b1 - a1 * b3],
-            [a1 * b2 - a2 * b1]
-        ])
-
-        return cross
 
 
 # ==================== 测试模块 ====================
@@ -126,11 +97,11 @@ if __name__ == "__main__":
     print("=" * 60)
 
     # 创建动力学实例（假设航天器参数）
-    J_sc = np.diag([100.0, 120.0, 80.0])  # 对角惯量矩阵 [kg·m²]
-    dynamics = SpacecraftDynamics(J_sc)
+    test_j_sc = np.diag([100.0, 120.0, 80.0])  # 对角惯量矩阵 [kg·m²]
+    dynamics = SpacecraftDynamics(test_j_sc)
 
     print(f"\n航天器转动惯量矩阵 J [kg·m²]:")
-    print(J_sc)
+    print(test_j_sc)
     print(f"\n惯量矩阵逆 J⁻¹ [(kg·m²)⁻¹]:")
     print(dynamics.J_sc_inv)
 
@@ -139,17 +110,18 @@ if __name__ == "__main__":
     print("测试工况1：静态（角速度为0）")
     print("-" * 60)
 
-    omega = np.zeros((3, 1))
-    h_vscmg = np.array([[5.0], [0.0], [0.0]])  # X方向5Nms角动量
-    tau_vscmg = np.zeros((3, 1))
-    tau_ext = np.array([[0.1], [0.0], [0.0]])   # X方向0.1Nm外力矩
+    test_omega = np.zeros((3, 1))
+    test_h_vscmg = np.array([[5.0], [0.0], [0.0]])  # X方向5Nms角动量
+    test_tau_vscmg = np.zeros((3, 1))
+    test_tau_ext = np.array([[0.1], [0.0], [0.0]])   # X方向0.1Nm外力矩
 
-    print(f"角速度 ω = {omega.flatten()} rad/s")
-    print(f"VSCMG角动量 h = {h_vscmg.flatten()} Nms")
-    print(f"VSCMG输出力矩 τ_vscmg = {tau_vscmg.flatten()} Nm")
-    print(f"外力矩 τ_ext = {tau_ext.flatten()} Nm")
+    print(f"角速度 ω = {test_omega.flatten()} rad/s")
+    print(f"VSCMG角动量 h = {test_h_vscmg.flatten()} Nms")
+    print(f"VSCMG输出力矩 τ_vscmg = {test_tau_vscmg.flatten()} Nm")
+    print(f"外力矩 τ_ext = {test_tau_ext.flatten()} Nm")
 
-    omega_dot = dynamics.compute_angular_acceleration(omega, h_vscmg, tau_vscmg, tau_ext)
+    test_omega_dot = dynamics.compute_angular_acceleration(test_omega, test_h_vscmg, test_tau_vscmg, test_tau_ext)
+    print(f"\n角加速度 ω̇ = {test_omega_dot.flatten()} rad/s²")
     print(f"\n角加速度 ω̇ = {omega_dot.flatten()} rad/s²")
 
     # 测试工况2：旋转状态
@@ -157,25 +129,25 @@ if __name__ == "__main__":
     print("测试工况2：旋转状态（Y轴0.1 rad/s）")
     print("-" * 60)
 
-    omega = np.array([[0.0], [0.1], [0.0]])  # 绕Y轴旋转
-    h_vscmg = np.array([[0.0], [0.0], [0.0]])
-    tau_vscmg = np.array([[-0.05], [0.0], [0.0]])  # 反向控制力矩
-    tau_ext = np.zeros((3, 1))
+    test_omega = np.array([[0.0], [0.1], [0.0]])  # 绕Y轴旋转
+    test_h_vscmg = np.array([[0.0], [0.0], [0.0]])
+    test_tau_vscmg = np.array([[-0.05], [0.0], [0.0]])  # 反向控制力矩
+    test_tau_ext = np.zeros((3, 1))
 
-    print(f"角速度 ω = {omega.flatten()} rad/s")
-    print(f"VSCMG角动量 h = {h_vscmg.flatten()} Nms")
-    print(f"VSCMG输出力矩 τ_vscmg = {tau_vscmg.flatten()} Nm")
-    print(f"外力矩 τ_ext = {tau_ext.flatten()} Nm")
+    print(f"角速度 ω = {test_omega.flatten()} rad/s")
+    print(f"VSCMG角动量 h = {test_h_vscmg.flatten()} Nms")
+    print(f"VSCMG输出力矩 τ_vscmg = {test_tau_vscmg.flatten()} Nm")
+    print(f"外力矩 τ_ext = {test_tau_ext.flatten()} Nm")
 
-    omega_dot = dynamics.compute_angular_acceleration(omega, h_vscmg, tau_vscmg, tau_ext)
-    print(f"\n角加速度 ω̇ = {omega_dot.flatten()} rad/s²")
+    test_omega_dot = dynamics.compute_angular_acceleration(test_omega, test_h_vscmg, test_tau_vscmg, test_tau_ext)
+    print(f"\n角加速度 ω̇ = {test_omega_dot.flatten()} rad/s²")
 
     # 分项显示
-    J_omega = J_sc @ omega
-    tau_gyro = SpacecraftDynamics._cross_product(omega, J_omega)
+    test_j_omega = test_j_sc @ test_omega
+    test_tau_gyro = np.cross(test_omega.flatten(), test_j_omega.flatten()).reshape(3, 1)
     print(f"\n分项验证：")
-    print(f"  航天器陀螺力矩 ω×(J·ω) = {tau_gyro.flatten()} Nm")
-    print(f"  总力矩 = {(tau_ext - tau_vscmg - tau_gyro).flatten()} Nm")
+    print(f"  航天器陀螺力矩 ω×(J·ω) = {test_tau_gyro.flatten()} Nm")
+    print(f"  总力矩 = {(test_tau_ext - test_tau_vscmg - test_tau_gyro).flatten()} Nm")
 
     print("\n" + "=" * 60)
     print("测试完成！请人工核对角加速度计算是否符合预期。")

@@ -120,25 +120,25 @@ if __name__ == "__main__":
     pyramid = PyramidVSCMG(beta_deg=54.73)
 
     # 测试用例：框架角全为0度
-    delta_zero = np.zeros((4, 1))  # [0, 0, 0, 0]弧度
-    delta_zero_deg = np.array([0, 0, 0, 0]) * 180 / np.pi
+    test_delta_zero = np.zeros((4, 1))  # [0, 0, 0, 0]弧度
+    test_delta_zero_deg = np.array([0, 0, 0, 0]) * 180 / np.pi
 
-    print(f"\n测试条件：框架角 δ = {delta_zero_deg}°")
-    print(f"侧倾角 β = 54.73° (sinβ = {pyramid.sin_beta:.6f}, cosβ = {pyramid.cos_beta:.6f})")
+    print(f"\n测试条件：框架角 δ = {test_delta_zero_deg}°")
+    print(f"侧倾角 β = 54.73° (sin(beta) = {pyramid.sin_beta:.6f}, cos(beta) = {pyramid.cos_beta:.6f})")
 
     # 获取矩阵
-    A_s_zero = pyramid.get_spin_matrix(delta_zero)
-    A_t_zero = pyramid.get_transverse_matrix(delta_zero)
+    test_a_s_zero = pyramid.get_spin_matrix(test_delta_zero)
+    test_a_t_zero = pyramid.get_transverse_matrix(test_delta_zero)
 
     print("\n" + "-" * 60)
     print("自旋轴矩阵 A_s (3x4):")
     print("-" * 60)
-    print(A_s_zero)
+    print(test_a_s_zero)
 
     print("\n" + "-" * 60)
     print("横向轴矩阵 A_t (3x4):")
     print("-" * 60)
-    print(A_t_zero)
+    print(test_a_t_zero)
 
     # 测试力矩计算
     print("\n" + "-" * 60)
@@ -146,26 +146,26 @@ if __name__ == "__main__":
     print("-" * 60)
 
     # 假设飞轮参数
-    h_w = np.array([[1.0], [1.0], [1.0], [1.0]])      # 飞轮角动量 [Nms]
-    delta_dot = np.array([[0.1], [0.1], [0.1], [0.1]])  # 框架角速度 [rad/s]
-    h_w_dot = np.array([[0.5], [0.5], [0.5], [0.5]])    # 飞轮角加速度 [Nms/s²]
+    test_h_w = np.array([[1.0], [1.0], [1.0], [1.0]])      # 飞轮角动量 [Nms]
+    test_delta_dot = np.array([[0.1], [0.1], [0.1], [0.1]])  # 框架角速度 [rad/s]
+    test_h_w_dot = np.array([[0.5], [0.5], [0.5], [0.5]])    # 飞轮角加速度 [Nms/s²]
 
-    print(f"Flywheel angular momentum h_w = {h_w.flatten()} Nms")
-    print(f"Gimbal rate delta_dot = {delta_dot.flatten()} rad/s")
-    print(f"Flywheel acceleration h_w_dot = {h_w_dot.flatten()} Nms/s^2")
+    print(f"Flywheel angular momentum h_w = {test_h_w.flatten()} Nms")
+    print(f"Gimbal rate delta_dot = {test_delta_dot.flatten()} rad/s")
+    print(f"Flywheel acceleration h_w_dot = {test_h_w_dot.flatten()} Nms/s^2")
 
     # 计算输出力矩
-    tau_out = pyramid.calculate_output_torque(delta_zero, h_w, delta_dot, h_w_dot)
+    test_tau_out = pyramid.calculate_output_torque(test_delta_zero, test_h_w, test_delta_dot, test_h_w_dot)
 
-    print(f"\nTotal torque tau = {tau_out.flatten()} Nm")
+    print(f"\nTotal torque tau = {test_tau_out.flatten()} Nm")
 
     # 分项验证
     print("\nVerification:")
-    tau_gyro = A_t_zero @ (h_w * delta_dot)
-    tau_spin = A_s_zero @ h_w_dot
-    print(f"  Gyro torque = {tau_gyro.flatten()} Nm")
-    print(f"  Spin torque = {tau_spin.flatten()} Nm")
-    print(f"  Total = {(tau_gyro + tau_spin).flatten()} Nm")
+    test_tau_gyro = test_a_t_zero @ (test_h_w * test_delta_dot)
+    test_tau_spin = test_a_s_zero @ test_h_w_dot
+    print(f"  Gyro torque = {test_tau_gyro.flatten()} Nm")
+    print(f"  Spin torque = {test_tau_spin.flatten()} Nm")
+    print(f"  Total = {(test_tau_gyro + test_tau_spin).flatten()} Nm")
 
     print("\n" + "=" * 60)
     print("Test completed! Please verify the matrix values.")

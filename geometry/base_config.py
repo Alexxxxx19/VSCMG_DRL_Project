@@ -89,17 +89,17 @@ class BaseVSCMGArray(ABC):
             总输出力矩向量 [3 x 1]
         """
         # 获取当前构型的矩阵
-        A_s = self.get_spin_matrix(delta)      # 自旋轴矩阵 [3 x N]
-        A_t = self.get_transverse_matrix(delta)  # 横向轴矩阵 [3 x N]
+        a_s = self.get_spin_matrix(delta)      # 自旋轴矩阵 [3 x N]
+        a_t = self.get_transverse_matrix(delta)  # 横向轴矩阵 [3 x N]
 
         # 计算框架轴产生的力矩（陀螺效应部分）
         # τ_gyro = A_t · (h_w ⊙ δ̇)
         h_w_times_delta_dot = h_w * delta_dot  # 逐元素乘积 [N x 1]
-        torque_gyro = A_t @ h_w_times_delta_dot  # [3 x N] @ [N x 1] = [3 x 1]
+        torque_gyro = a_t @ h_w_times_delta_dot  # [3 x N] @ [N x 1] = [3 x 1]
 
         # 计算自旋轴产生的力矩（控制力矩部分）
         # τ_spin = A_s · ḣ_w
-        torque_spin = A_s @ h_w_dot  # [3 x N] @ [N x 1] = [3 x 1]
+        torque_spin = a_s @ h_w_dot  # [3 x N] @ [N x 1] = [3 x 1]
 
         # 总输出力矩
         total_torque = torque_gyro + torque_spin
