@@ -122,7 +122,6 @@ if __name__ == "__main__":
 
     test_omega_dot = dynamics.compute_angular_acceleration(test_omega, test_h_vscmg, test_tau_vscmg, test_tau_ext)
     print(f"\n角加速度 ω̇ = {test_omega_dot.flatten()} rad/s²")
-    print(f"\n角加速度 ω̇ = {omega_dot.flatten()} rad/s²")
 
     # 测试工况2：旋转状态
     print("\n" + "-" * 60)
