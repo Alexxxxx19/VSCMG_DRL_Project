@@ -49,9 +49,10 @@ class VSCMGEnv(gym.Env):
 
         # 状态空间: 14维连续
         # MRPs(3) + omega(3) + delta(4) + h_w(4)
+        obs_bound = np.full(14, 1e30, dtype=np.float32)
         self.observation_space = spaces.Box(
-            low=-np.inf,
-            high=np.inf,
+            low=-obs_bound,
+            high=obs_bound,
             shape=(14,),
             dtype=np.float32
         )
@@ -74,10 +75,10 @@ class VSCMGEnv(gym.Env):
         super().reset(seed=seed)
 
         # 随机初始化 MRPs 姿态 [-0.1, 0.1]
-        self.mrps = np.random.uniform(-0.1, 0.1, size=3)
+        self.mrps = self.np_random.uniform(-0.1, 0.1, size=3)
 
         # 随机初始化本体角速度 [-0.01, 0.01]
-        self.omega = np.random.uniform(-0.01, 0.01, size=3)
+        self.omega = self.np_random.uniform(-0.01, 0.01, size=3)
 
         # 框架角初始化为 0
         self.delta = np.zeros(4)
@@ -139,7 +140,7 @@ class VSCMGEnv(gym.Env):
 
         # 构造 MRPs 运动学矩阵
         # G(sigma) = 1/4 * [(1 - σᵀσ)I + 2[σ]× + 2σσᵀ]
-        I = np.eye(3)
+        identity = np.eye(3)
         sigma_cross = np.array([
             [0, -sigma[2], sigma[1]],
             [sigma[2], 0, -sigma[0]],
@@ -147,10 +148,10 @@ class VSCMGEnv(gym.Env):
         ])
         sigma_outer = np.outer(sigma, sigma)
 
-        G = 0.25 * ((1 - sigma_norm_sq) * I + 2 * sigma_cross + 2 * sigma_outer)
+        g_matrix = 0.25 * ((1 - sigma_norm_sq) * identity + 2 * sigma_cross + 2 * sigma_outer)
 
         # 计算 MRPs 导数
-        sigma_dot = G @ self.omega
+        sigma_dot = g_matrix @ self.omega
 
         # 更新 MRPs
         self.mrps += sigma_dot * self.dt
