@@ -9,5 +9,7 @@ __pycache__/
 # 3. 忽略未来的训练数据和日志 (但保留文件夹结构)
 checkpoints/*
 !checkpoints/**/.keep
+models/
+*.pth
 runs/
 *.log

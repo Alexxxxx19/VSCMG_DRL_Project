@@ -1,5 +1,28 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.0] - 架构级重构与监控系统升级
+**日期: 2026-04-12**
+
+### Added (新增)
+- **API 架构统一**: 引入 `SyncVectorEnv` 实现单/多环境接口向下兼容，无论 `--num_envs` 为 1 或 N，`env.step()` 返回结构完全统一，消灭了所有 if/else 分支判断。
+- **环境寿命限制**: 在 `VSCMGEnv.step()` 中安装 `max_episode_steps=1000` 截断逻辑，`truncated` 信号正式生效，彻底修复了飞船"长生不老"导致 Episode 战报永不打印的顽疾。
+- **16 轨独立曲线监控**: TensorBoard 每条并行环境独立使用 `Reward/Env_{idx}` 标签写入，实现 16 条彩色独立折线分离展示。
+- **均值基准线聚合**: 每批次完赛的得分统一收集并计算均值，写入 `Reward/Mean_Reward` 基准线，为策略收敛趋势提供稳定参照。
+- **动态时间戳目录**: `SummaryWriter` log_dir 强制拼接时间戳（`{num_envs}envs_{mmdd_HHMMSS}`），彻底规避旧缓存覆盖问题。
+- **Loss 强制刷盘**: `agent.update()` 返回三个 Loss 值，每次更新后立即执行 `writer.flush()`，确保 TensorBoard 实时可读。
+- **心跳前置探针**: 训练启动时写入 `System/Ignition=1`（step=0），用于自证数据管道连通性。
+
+### Fixed (修复)
+- **作用域修复**: 修正 `best_reward` 全局变量遮蔽问题，将 `nonlocal` 改为 `global`，确保 `_log_and_checkpoint` 内赋值可穿透模块级作用域。
+- **重置时序优化**: 引入 `_reset_envs` 延迟重置集合，将 `episode_rewards/lengths` 清零时机推迟至两个解析策略均读取完成后，解决策略 2 读到的永远是 0 的数据竞争 Bug。
+- **Actor 更新帧返回值**: 修复 `update()` 方法在 Critic 仅更新帧返回 `None` 而非 `0.0` 的问题，统一 Loss 数据类型。
+
+### Changed (变更)
+- `agent.update()` 方法签名增加返回值 `(actor_loss, c1_loss, c2_loss)`，与调用方解耦，避免直接操作内部张量。
+- `.gitignore` 新增 `models/` 目录与 `*.pth` 权重文件过滤规则。
+
+---
+
 ## [v0.4.0] - 核心训练管线 (Training Pipeline) 竣工
 **日期: 2026-04-11**
 

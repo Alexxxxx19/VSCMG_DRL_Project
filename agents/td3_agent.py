@@ -245,6 +245,9 @@ class TD3:
         Args:
             replay_buffer: 经验回放池
             batch_size: 批次大小
+
+        Returns:
+            tuple: (actor_loss, critic_loss_1, critic_loss_2)
         """
         self.total_count += 1
 
@@ -304,6 +307,9 @@ class TD3:
             self.soft_update(self.actor, self.target_actor)
             self.soft_update(self.critic_1, self.target_critic_1)
             self.soft_update(self.critic_2, self.target_critic_2)
+
+            return actor_loss.item(), critic_loss_1.item(), critic_loss_2.item()
+        return 0.0, critic_loss_1.item(), critic_loss_2.item()
 
     def save_model(self, path: str):
         """

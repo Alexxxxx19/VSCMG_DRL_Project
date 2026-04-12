@@ -62,6 +62,9 @@ class VSCMGEnv(gym.Env):
         self.max_wheel_accel = 0.5  # Nms/s²
         self.max_omega = 20.0  # rad/s (终止条件)
 
+        # Episode 步数上限
+        self.max_episode_steps = 1000
+
         # 状态变量
         self.mrps = None  # MRPs 姿态 [3]
         self.omega = None  # 本体角速度 [3]
@@ -76,6 +79,7 @@ class VSCMGEnv(gym.Env):
 
         # 随机初始化 MRPs 姿态 [-0.1, 0.1]
         self.mrps = self.np_random.uniform(-0.1, 0.1, size=3)
+        self.current_step = 0  # 步数计数器
 
         # 随机初始化本体角速度 [-0.01, 0.01]
         self.omega = self.np_random.uniform(-0.01, 0.01, size=3)
@@ -165,9 +169,12 @@ class VSCMGEnv(gym.Env):
         # 计算奖励
         reward = -(np.sum(self.mrps**2) + 0.1 * np.sum(self.omega**2) + 0.01 * np.sum(action**2))
 
+        # 步数计数器自增
+        self.current_step += 1
+
         # 终止条件
         terminated = np.linalg.norm(self.omega) > self.max_omega
-        truncated = False
+        truncated = self.current_step >= self.max_episode_steps
 
         # 组装观测
         obs = self._get_obs().astype(np.float32)
