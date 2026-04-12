@@ -60,6 +60,9 @@ if __name__ == "__main__":
     # 解析参数
     args = parse_args()
 
+    # 规范化设备参数为 torch.device 对象
+    device = torch.device(args.device)
+
     # 检测是否使用默认基础配置
     if args.num_envs == 1 and args.device == "cpu":
         print("\n" + "*" * 80)
@@ -105,7 +108,7 @@ if __name__ == "__main__":
         device=args.device,
         delay=2
     )
-    print("[Tracer] TD3 神经网络已建立并载入 GPU！")
+    print(f"[Tracer] TD3 神经网络已建立并载入 {'GPU' if device.type == 'cuda' else 'CPU'}！")
 
     # TensorBoard 日志（动态时间戳破解幽灵缓存）
     ts = datetime.datetime.now().strftime("%m%d_%H%M%S")
@@ -115,37 +118,22 @@ if __name__ == "__main__":
     print(f"\n[Storage] TensorBoard 日志正实时写入绝对路径: {os.path.abspath(writer.log_dir)}\n")
 
     # ============================================================================
-    # [自证清白] 心跳前置探针：验证数据管道本身是否连通
-    # ============================================================================
-    writer.add_scalar("System/Ignition", 1, 0)
-    writer.flush()
-    print("[Probe] System/Ignition=1 已写入 TensorBoard，数据管道连通性已验证。\n")
-
-    # ============================================================================
     # 训练状态跟踪
     # ============================================================================
     best_reward = -1e6
     episode_rewards = np.zeros(args.num_envs, dtype=np.float32)
     episode_lengths = np.zeros(args.num_envs, dtype=np.int32)
+    first_episode_done = False  # 心跳静默开关
 
-    def _log_and_checkpoint(env_idx: int, ep_reward: float, ep_len: int, g_step: int,
-                            mean_reward: float = None):
-        """战报打印 + TensorBoard 写入（独立曲线 + 均值基准线）+ 最佳模型保存"""
-        global best_reward
-        print(f"\n[战报] 飞船 Env-{env_idx} 完赛！得分: {ep_reward:12.4f}, "
-              f"坚持了 {ep_len:4d} 步 (当前全局总吞吐: {g_step} 步)\n")
-        # 独立曲线：每个 Env 一条专属 Tag
-        writer.add_scalar(f"Reward/Env_{env_idx}", ep_reward, g_step)
-        writer.add_scalar("Environment/Steps_Survived", ep_len, g_step)
-        # 均值基准线（仅当本批次存在多个完赛环境时写入）
-        if mean_reward is not None:
-            writer.add_scalar("Reward/Mean_Reward", mean_reward, g_step)
-        writer.flush()
+    def _log_and_checkpoint(ep_reward: float):
+        """全局最佳模型保存（基于单 episode 得分触发，不写 TensorBoard）"""
+        global best_reward, first_episode_done
+        first_episode_done = True
         if ep_reward > best_reward:
             best_reward = ep_reward
             os.makedirs("checkpoints", exist_ok=True)
             agent.save_model("checkpoints/best_model_parallel.pth")
-            print(f"  >> New best reward: {best_reward:.4f} — checkpoint saved!")
+            print(f"  >> [Checkpoint] New best reward: {best_reward:.4f} -> Model saved.")
 
     # ============================================================================
     # 训练主循环（全局步数驱动）
@@ -165,9 +153,9 @@ if __name__ == "__main__":
     # 全局步数驱动主循环
     _reset_envs: set = set()  # 延迟重置集合（完赛→先读后清）
     for global_step in range(0, args.max_steps, args.num_envs):
-        # --- 心跳监测（每 1000 步输出一次进度） ---
-        if global_step > 0 and global_step % 1000 == 0:
-            print(f"[Heartbeat] 物理引擎正在全速运转，当前已吞吐 {global_step} 步数据...")
+        # --- 心跳监测（仅在首个 Episode 落地前静默打印） ---
+        if not first_episode_done and global_step > 0 and global_step % 2000 == 0:
+            print(f"[Heartbeat] Training progress: {global_step} steps processed...")
 
         # --- 定期保存检查点（每 10 万步） ---
         if global_step > 0 and global_step % 100000 == 0:
@@ -221,19 +209,6 @@ if __name__ == "__main__":
             if done:
                 _reset_envs.add(i)
 
-        # ============================================================================
-        # [Bug Hunt] 计分板探针：只要有任意子环境完赛，立即打印 infos 全貌
-        # ============================================================================
-        any_done = bool(np.any(dones) or np.any(truncateds))
-        if any_done:
-            print(f"\n[探针] global_step={global_step} | 检测到完赛信号！")
-            print(f"       dones     = {dones}")
-            print(f"       truncateds= {truncateds}")
-            print(f"       infos.keys() = {list(infos.keys())}")
-            for _k, _v in infos.items():
-                print(f"       infos['{_k}'] -> type={type(_v).__name__} | value={repr(_v)[:300]}")
-            print()
-
         # --- 策略 1：infos["final_info"]（标准 Gymnasium 向量环境结构）---
         final_infos = infos.get("final_info")
         if final_infos is not None:
@@ -246,12 +221,11 @@ if __name__ == "__main__":
                     episode_length = int(ep.get("l", 0))
                     if episode_reward != 0.0 or episode_length != 0:
                         batch_rewards.append(episode_reward)
-                        _log_and_checkpoint(i, episode_reward, episode_length, global_step,
-                                            mean_reward=None)  # 均值在批次结束后统一写
+                        _log_and_checkpoint(episode_reward)  # 仅触发最佳模型检查，不写 TensorBoard
             # 批次完赛写入均值基准线
             if len(batch_rewards) > 0:
                 mean_reward = float(np.mean(batch_rewards))
-                writer.add_scalar("Reward/Mean_Reward", mean_reward, global_step)
+                writer.add_scalar("Global/Mean_Reward", mean_reward, global_step)
                 writer.flush()
 
         # --- 策略 2：infos["final_info"] 备用（未开启 episode 记录时）---
@@ -269,12 +243,11 @@ if __name__ == "__main__":
                     episode_length = int(episode_lengths[i])
                     if episode_reward != 0.0 or episode_length != 0:
                         batch_rewards.append(episode_reward)
-                        _log_and_checkpoint(i, episode_reward, episode_length, global_step,
-                                            mean_reward=None)
+                        _log_and_checkpoint(episode_reward)  # 仅触发最佳模型检查，不写 TensorBoard
             # 批次完赛写入均值基准线
             if len(batch_rewards) > 0:
                 mean_reward = float(np.mean(batch_rewards))
-                writer.add_scalar("Reward/Mean_Reward", mean_reward, global_step)
+                writer.add_scalar("Global/Mean_Reward", mean_reward, global_step)
                 writer.flush()
 
         # --- 统一延迟重置（在读完 episode_rewards/lengths 后才能清零）---
