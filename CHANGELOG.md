@@ -6,6 +6,7 @@
 ### Changed (优化)
 - 彻底移除了 `train.py` 中 `_log_and_checkpoint` 函数对单体环境（Env_x）的冗余监控写入。
 - 利用 TensorBoard 字母排序机制，将全局平均分命名空间重构为 `Global/Mean_Reward`，实现核心大盘置顶。
+- 将 PyCharm 运行配置（16核并行环境及 TensorBoard 启动项）持久化至 `.run/` 目录并归档，确保多端环境下的启动参数一致性。
 
 ### Fixed (修复)
 -  清除了 `train.py` 中关于设备分配的硬编码日志，使其能够自适应动态获取的 `device` 状态。
