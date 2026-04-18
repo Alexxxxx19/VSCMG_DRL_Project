@@ -1,5 +1,27 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.5] - 环境侧 v1.0 前置条件对齐
+**日期：2026-04-19**
+
+### Changed (姿态基础设施)
+- 环境内部姿态表示改为 **scalar-first quaternion `[w, x, y, z]`**，替代原有的纯 MRP 内部姿态积分。
+- 引入统一误差链路：`q_err = q_target ⊗ q_current*` → 双覆盖规避（标量部 `q[0] < 0` 取反）→ quaternion → MRP → shadow set。
+- 观测接口切换为 22 维固定语义：`sigma_err`(3) + `omega_B`(3) + `sin(delta)`(4) + `cos(delta)`(4) + `delta_dot`(4) + `Omega_w_tilde`(4)。
+- 飞轮内部状态改为显式的 `omega_w + I_w -> h_w` 三层结构，`Omega_w_tilde` 直接基于 `omega_w` 计算。
+
+### Fixed (环境前置条件对齐)
+- reset 初始化对齐 v1.0 前置要求：姿态误差限制在 ±5°（直接约束旋转角），本体角速度归零，飞轮初始化到 3000 rpm 偏置，外扰力矩关闭。
+- 动作缩放对齐 v1.0 前置要求：gimbal `max 1 rad/s`，wheel `max 50 rad/s²`。
+- 修复 `self.np_random` 使用 `randn()` 的 numpy 兼容性问题，改为 `standard_normal()`。
+
+### Notes (范围说明)
+- 本版本只完成环境侧前置对齐，尚未修改 `train.py`、`tests` 的 `state_dim=22` 对齐。
+- reward 仍为 v0.5 旧版，待后续手动设计最终 reward 权重。
+- 训练收敛验证未开始。
+- 旧的 `v0.5.x` checkpoint 与当前环境接口不再兼容。
+
+---
+
 ## [v0.5.4] - 架构规约统一：22维状态语义冻结
 **日期：2026-04-18**
 
