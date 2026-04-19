@@ -96,7 +96,7 @@ if __name__ == "__main__":
 
     # 创建 TD3 Agent（注入设备参数）
     agent = TD3(
-        state_dim=14,
+        state_dim=22,
         action_dim=8,
         hidden_dim=256,
         action_bound=1.0,
