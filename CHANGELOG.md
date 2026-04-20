@@ -1,5 +1,38 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.7] - 环境侧参数集中化接口第一阶段
+**日期：2026-04-20**
+
+### Added (新增)
+- **环境配置集中入口** `configs/env_config.py`：`VSCMGEnvConfig` dataclass 建立 nominal / current / randomization 三层结构，统一管理所有环境物理参数。
+- **动力学惯量更新接口** `envs/dynamics.py`：`SpacecraftDynamics` 新增 `update_inertia()` 方法和 `compute_angular_acceleration(j_sc=...)` 可选参数，解除"一次性求逆锁死"，支持 episode 级 J 随机化。
+
+### Changed (重构)
+- `envs/vscmg_env.py` 重构为配置驱动的 `VSCMGEnv`：
+  - `__init__(config=)` 接受 `VSCMGEnvConfig` 实例（默认走 `make_default_config()`，即 v1.0 行为）。
+  - 新增 `self.cfg`（永久基线配置）和 `self.episode_cfg`（每 episode 工作副本）。
+  - 新增 `_sync_dynamics()` / `_build_episode_cfg()` 内部方法。
+  - `reset(options=...)` 重构为"克隆 → randomization → options 覆盖"链路，options 仅作用于本 episode，不泄漏到后续 episode。
+  - `step()` 改为读取 `self.episode_cfg` 所有物理参数。
+  - **22 维观测语义不变**：sigma_err(3) + omega_B(3) + sin(delta)(4) + cos(delta)(4) + delta_dot(4) + Omega_w_tilde(4)。
+  - **8 维动作语义不变**：前 4 维 gimbal 指令 max 1 rad/s，后 4 维 wheel 指令 max 50 rad/s²。
+  - **reward 结构未改**，仍保持 v0.5 旧版。
+
+### Verified (验证)
+- 最小验证：连续两次 `reset`，第一次传入 `options={"j_sc": ...}` 覆盖惯量，第二次不带 options，确认 `episode_cfg.current_j_sc` 与 `dynamics.j_sc` 均回到默认 `[100, 100, 100]`，options 不泄漏。
+- 默认配置下 `reset()` 返回 obs shape `(22,)`，`step()` 正常执行，无维度错误或数值炸裂。
+
+### Notes (范围说明 — 明确"还没做完什么")
+- **本版本只完成环境侧参数集中化接口第一阶段**，不是训练完成版，不是全项目参数集中化完成版。
+- `train.py` 仍未接入统一配置链路，所有训练超参数仍为硬编码。
+- `agents/td3_agent.py` 参数仍未集中化。
+- `configs/train_config.py` / `configs/agent_config.py` 尚未建立。
+- reward 仍为 v0.5 旧版（sigma_err² + 0.1·omega² + 0.01·action²），尚未重构为分项系数叠加结构。
+- 正式训练、收敛验证、v1.0 验收尚未开始。
+- 旧的 `v0.5.x` checkpoint 与当前接口不兼容，需重新训练。
+
+---
+
 ## [v0.5.6] - 训练入口 22 维接口对齐
 **日期：2026-04-19**
 

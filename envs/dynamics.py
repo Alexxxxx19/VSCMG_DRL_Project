@@ -24,17 +24,39 @@ class SpacecraftDynamics:
             j_sc: 航天器本体转动惯量矩阵 [3 x 3]，单位：kg·m²
                   必须是对称正定矩阵
         """
-        self.J_sc = j_sc.astype(np.float64)
+        self._j_sc = j_sc.astype(np.float64)
+        self._j_sc_inv = np.linalg.inv(self._j_sc)
 
-        # 预计算惯量矩阵的逆，避免重复求逆
-        self.J_sc_inv = np.linalg.inv(self.J_sc)
+    @property
+    def j_sc(self) -> np.ndarray:
+        """当前转动惯量矩阵（只读副本）"""
+        return self._j_sc.copy()
+
+    @property
+    def j_sc_inv(self) -> np.ndarray:
+        """当前转动惯量矩阵的逆（只读副本）"""
+        return self._j_sc_inv.copy()
+
+    def update_inertia(self, j_sc: np.ndarray) -> None:
+        """
+        Episode 级随机化 / 时变 J(t) 专用接口
+
+        在 reset 时采样得到新的 J_sc 后调用此方法，
+        动力学模块会重新计算 J_sc_inv，后续 step 使用新值。
+
+        Args:
+            j_sc: 新的转动惯量矩阵 [3 x 3]，必须对称正定
+        """
+        self._j_sc = j_sc.astype(np.float64)
+        self._j_sc_inv = np.linalg.inv(self._j_sc)
 
     def compute_angular_acceleration(
         self,
         omega: np.ndarray,
         h_vscmg: np.ndarray,
         tau_vscmg: np.ndarray,
-        tau_external: np.ndarray = None
+        tau_external: np.ndarray = None,
+        j_sc: np.ndarray = None,
     ) -> np.ndarray:
         """
         计算航天器角加速度（牛顿-欧拉方程）
@@ -60,10 +82,21 @@ class SpacecraftDynamics:
             h_vscmg: VSCMG阵列总角动量 [3 x 1]，单位：Nms
             tau_vscmg: VSCMG输出力矩 [3 x 1]，单位：Nm
             tau_external: 外部干扰力矩 [3 x 1]，单位：Nm，默认为零向量
+            j_sc: 可选，覆盖默认 J_sc（支持 episode 级随机化 /
+                  未来时变 J(t) 扩展）。若为 None，使用构造时或
+                  update_inertia() 设置的当前惯量矩阵
 
         Returns:
             角加速度向量 [3 x 1]，单位：rad/s²
         """
+        # --- 选取惯量矩阵 ---
+        if j_sc is None:
+            j_use = self._j_sc
+            j_inv_use = self._j_sc_inv
+        else:
+            j_use = j_sc.astype(np.float64)
+            j_inv_use = np.linalg.inv(j_use)
+
         # 确保输入为列向量
         omega = omega.reshape(3, 1)
         h_vscmg = h_vscmg.reshape(3, 1)
@@ -76,7 +109,7 @@ class SpacecraftDynamics:
             tau_external = tau_external.reshape(3, 1)
 
         # 1. 计算航天器自身陀螺力矩：τ_gyro_sc = ω × (J · ω)
-        j_omega = self.J_sc @ omega  # J · ω
+        j_omega = j_use @ omega  # J · ω
         tau_gyro_sc = np.cross(omega.flatten(), j_omega.flatten()).reshape(3, 1)
 
         # 2. 计算VSCMG牵连耦合力矩：τ_coup = ω × h_vscmg
@@ -84,10 +117,9 @@ class SpacecraftDynamics:
 
         # 3. 牛顿-欧拉方程：ω̇ = J⁻¹ · [τ_ext - τ_vscmg - τ_gyro_sc - τ_coup]
         total_torque = tau_external - tau_vscmg - tau_gyro_sc - tau_coupling
-        omega_dot = self.J_sc_inv @ total_torque
+        omega_dot = j_inv_use @ total_torque
 
         return omega_dot
-
 
 
 # ==================== 测试模块 ====================
@@ -103,7 +135,14 @@ if __name__ == "__main__":
     print(f"\n航天器转动惯量矩阵 J [kg·m²]:")
     print(test_j_sc)
     print(f"\n惯量矩阵逆 J⁻¹ [(kg·m²)⁻¹]:")
-    print(dynamics.J_sc_inv)
+    print(dynamics.j_sc_inv)
+
+    # 测试 update_inertia（模拟 episode 级随机化）
+    print("\n--- 测试 update_inertia (episode 级 J 随机化) ---")
+    new_j = np.diag([80.0, 90.0, 70.0])
+    dynamics.update_inertia(new_j)
+    print(f"更新后 J_sc:\n{dynamics.j_sc}")
+    print(f"更新后 J_sc_inv:\n{dynamics.j_sc_inv}")
 
     # 测试工况1：静态
     print("\n" + "-" * 60)
@@ -147,6 +186,18 @@ if __name__ == "__main__":
     print(f"\n分项验证：")
     print(f"  航天器陀螺力矩 ω×(J·ω) = {test_tau_gyro.flatten()} Nm")
     print(f"  总力矩 = {(test_tau_ext - test_tau_vscmg - test_tau_gyro).flatten()} Nm")
+
+    # 测试工况3：传入 j_sc 参数覆盖（模拟时变 J）
+    print("\n" + "-" * 60)
+    print("测试工况3：传入 j_sc 参数覆盖（时变 J 场景）")
+    print("-" * 60)
+    override_j = np.diag([50.0, 50.0, 50.0])
+    test_omega_dot_override = dynamics.compute_angular_acceleration(
+        test_omega, test_h_vscmg, test_tau_vscmg, test_tau_ext, j_sc=override_j
+    )
+    print(f"原始 J 时 ω̇ = {dynamics.compute_angular_acceleration(test_omega, test_h_vscmg, test_tau_vscmg, test_tau_ext).flatten()} rad/s²")
+    print(f"覆盖 J 时 ω̇ = {test_omega_dot_override.flatten()} rad/s²")
+    print(f"（注意：覆盖后内部 J_sc 值不变，update_inertia 才会改持久状态）")
 
     print("\n" + "=" * 60)
     print("测试完成！请人工核对角加速度计算是否符合预期。")
