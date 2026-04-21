@@ -1,5 +1,51 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.8] - 参数集中化第二阶段（训练侧 + Agent 侧）
+**日期：2026-04-21**
+
+### Added (新增)
+- **训练配置集中入口** `configs/train_config.py`：`TrainConfig` dataclass 建立训练调度参数统一管理，包括并行数、步数、batch、更新频率、ReplayBuffer、日志/检查点路径、随机种子等。
+- **Agent 配置集中入口** `configs/agent_config.py`：`AgentConfig` dataclass 建立 TD3 / 网络超参数统一管理，包括网络结构、TD3 核心参数、学习率、探索噪声等。
+
+### Changed (重构)
+- `train.py` 重构为配置驱动的训练主循环：
+  - 新增 `parse_args()` 函数，CLI 参数默认值设为 `None`，实现"CLI 参数 > config 默认值"的优先级规则。
+  - 新增 `_apply_cli_overrides()` 函数，处理 CLI 覆盖逻辑。
+  - 新增 `set_global_seed()` 函数，统一设置 numpy、torch、random、cuda 的随机种子。
+  - 新增 `print_config_snapshot()` 函数，打印训练和 Agent 配置快照。
+  - `state_dim` / `action_dim` 改为运行时从 `envs.single_observation_space.shape[0]` / `envs.single_action_space.shape[0]` 自动获取，修正了向量环境维度获取错误。
+  - `update_every` / `update_times` 独立控制，CLI 可分别覆盖。
+  - `seed` 已接入训练链路，默认 `seed=0`（不固定随机种子，保持原行为）。
+  - `tb_flush_secs` 已接入 `SummaryWriter`，默认 30 秒。
+  - `checkpoint_frequency` 统一管理，默认 10 万步。
+  - **22 维观测语义不变**：sigma_err(3) + omega_B(3) + sin(delta)(4) + cos(delta)(4) + delta_dot(4) + Omega_w_tilde(4)。
+  - **8 维动作语义不变**：前 4 维 gimbal 指令 max 1 rad/s，后 4 维 wheel 指令 max 50 rad/s²。
+  - **reward 结构未改**，仍保持 v0.5 旧版。
+
+### Verified (验证)
+- `num_envs=1` (SyncVectorEnv)：
+  - `state_dim=22`、`action_dim=8` 正确获取
+  - ReplayBuffer 创建成功（capacity=100000）
+  - TD3 Agent 创建成功（Actor 22→8，Critic 30→1）
+  - hidden_dim=256、batch_size=256、replay_capacity=100000、update_every=50、update_times=50、gamma=0.99、tau=0.005、seed=0
+- `num_envs=4` (AsyncVectorEnv)：
+  - `envs.observation_space.shape = (4, 22)`、`envs.single_observation_space.shape = (22,)`
+  - `envs.action_space.shape = (4, 8)`、`envs.single_action_space.shape = (8,)`
+  - `state_dim=22`、`action_dim=8` 正确获取
+  - ReplayBuffer 创建成功（capacity=100000）
+  - TD3 Agent 创建成功（Actor 22→8，Critic 30→1）
+  - Windows 下 AsyncVectorEnv 的 timeout 发生在 `envs.close()` 收尾阶段，不影响"维度与构造链路验证"结论
+
+### Notes (范围说明 — 明确"还没做完什么")
+- **本版本只完成参数集中化第二阶段（训练侧 + Agent 侧）**，不是 v1.0 完成版。
+- reward 仍为 v0.5 旧版（sigma_err² + 0.1·omega² + 0.01·action²），尚未重构为分项系数叠加结构。
+- 正式训练、收敛验证、v1.0 验收尚未开始。
+- `policy_noise` / `noise_clip` 在 `configs/agent_config.py` 中是预留字段，当前未真正接入 `td3_agent.py`（agent 内部硬编码为 0.5）。
+- `eval_frequency` 在 `configs/train_config.py` 中是预留字段，当前未在训练循环中使用。
+- 旧的 `v0.5.x` checkpoint 与当前接口不兼容，需重新训练。
+
+---
+
 ## [v0.5.7] - 环境侧参数集中化接口第一阶段
 **日期：2026-04-20**
 
