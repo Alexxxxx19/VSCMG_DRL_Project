@@ -15,10 +15,10 @@ VSCMG Agent / TD3 网络参数集中配置
 用法：
     from configs.agent_config import AgentConfig, make_default_agent_config
 
-    # 运行时从 env 自动获取维度
+    # 运行时从向量环境自动获取维度（single space）
     cfg = make_default_agent_config()
-    cfg.state_dim = env.observation_space.shape[0]
-    cfg.action_dim = env.action_space.shape[0]
+    cfg.state_dim = envs.single_observation_space.shape[0]
+    cfg.action_dim = envs.single_action_space.shape[0]
     agent = TD3(state_dim=cfg.state_dim, action_dim=cfg.action_dim,
                 hidden_dim=cfg.hidden_dim, ...)
 """
@@ -54,9 +54,9 @@ class AgentConfig:
     actor_lr:     float  = 3e-4     # Actor 学习率
     critic_lr:    float  = 3e-4     # Critic 学习率
 
-    # --- 目标策略平滑（TD3 更新内部参数） ---
-    policy_noise: float  = 0.2      # 目标策略平滑噪声标准差（预留，当前未接入）
-    noise_clip:   float  = 0.5      # 目标策略平滑噪声截断范围（预留，当前未接入）
+    # --- 目标策略平滑（TD3 更新内部参数，已接入训练链路） ---
+    policy_noise: float  = 0.5      # 目标策略平滑噪声标准差
+    noise_clip:   float  = 0.5      # 目标策略平滑噪声截断范围
 
     # --- 设备 ---
     device:       str    = "cpu"    # 计算设备 (cpu/cuda)，可被 train.py CLI 覆盖
@@ -69,10 +69,8 @@ def make_default_agent_config() -> AgentConfig:
     注意：
     - state_dim / action_dim 由 train.py 运行时从 env 自动覆盖，
       此处仅作为文档和 fallback。
-    - policy_noise / noise_clip：预留字段，当前未接入训练链路。
-      td3_agent.py 的 update() 方法内部硬编码为 0.5，
-      未通过 TD3.__init__ 暴露，不能通过此 config 真实控制训练行为。
-      待后续 agent 侧重构时一并接通。
+    - policy_noise / noise_clip：已接入 TD3 训练链路，
+      默认值 0.5 / 0.5 与原硬编码行为一致。
     """
     return AgentConfig(
         state_dim=22,
@@ -85,7 +83,7 @@ def make_default_agent_config() -> AgentConfig:
         sigma=0.1,
         actor_lr=3e-4,
         critic_lr=3e-4,
-        policy_noise=0.2,
+        policy_noise=0.5,
         noise_clip=0.5,
         device="cpu",
     )

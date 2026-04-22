@@ -1,4 +1,41 @@
-# VSCMG DRL 控制系统迭代日志
+# VSCMG DRL 控制系统迭代日���
+
+## [v0.5.9] - 启动 Bug 修复与 TD3 平滑噪声配置接通
+**日期：2026-04-22**
+
+### Fixed (修复)
+- 修复 `envs/vscmg_env.py::_build_episode_cfg()` 中 `ep / episode_cfg` 局部变量混用导致的 `UnboundLocalError`：
+  - 函数内部第 213 行调用 `ep.apply_randomization(...)`，但 `ep` 未定义
+  - 第 209 行实际创建的是 `episode_cfg`，导致首次 `envs.reset(seed=...)` 时 AsyncVectorEnv 在 worker 内崩溃
+  - 统一使用 `episode_cfg` 作为局部变量名，消除所有 `ep` 殷留
+- 修复 `train.py` 启动阻塞问题：
+  - 16 核并行环境 `train.py --num_envs 16 --batch_size 2048 --update_every 200 --device cuda` 现可正常启动
+  - 配置快照正确打印，训练主循环已开始执行
+- 接通 `policy_noise / noise_clip` 到完整 TD3 训练链路：
+  - `agents/td3_agent.py`：`TD3.__init__()` 新增 `policy_noise` / `noise_clip` 参数
+  - `agents/td3_agent.py`：`update()` 方法中目标策略平滑逻辑改用 `self.policy_noise` / `self.noise_clip`，移除硬编码 `0.5`
+  - `configs/agent_config.py`：`policy_noise` 默认值从 `0.2` 改为 `0.5`，`noise_clip` 保持 `0.5`，与原硬编码行为一致
+  - `configs/agent_config.py`：字段注释与 `make_default_agent_config()` docstring 更新为"已接入 TD3 训练链路"
+  - `train.py`：`TD3(...)` 构造时传入 `policy_noise=agent_cfg.policy_noise` / `noise_clip=agent_cfg.noise_clip`
+  - `train.py`：修正 `print_config_snapshot()` 中 `policy_noise / noise_clip` 的过时显示文案（移除"预留未接入"）
+  - `train.py`：顶部用法示例修正为 `envs.single_observation_space.shape[0]` / `envs.single_action_space.shape[0]`
+
+### Verified (验证)
+- 最小验证：`env = VSCMGEnv(); env.reset(seed=42)` 正常通过
+- 最小验证：`env.reset(seed=43, options={"j_sc": np.diag([10.0, 10.0, 10.0])})` 正常通过
+- 训练启动验证：`train.py --num_envs 16 --batch_size 2048 --update_every 200 --device cuda` 成功越过首次 `envs.reset(seed=seed_value)`
+  - 配置快照正常打印（`state_dim=22`, `action_dim=8`, `policy_noise=0.5`, `noise_clip=0.5`）
+  - 训练主循环已启动，心跳打印正常：`[Heartbeat] Training progress: 2000 steps processed...`
+  - Episode 完成并触发模型保存：`New best reward: -111.0863 -> Model saved.`
+
+### Notes (范围说明 — 明确"还没做完什么")
+- **本版本只完成启动 bug 修复与 TD3 平滑噪声配置接通**，不是 v1.0 完成版。
+- reward 仍为 v0.5 旧版（sigma_err² + 0.1·omega² + 0.01·action²），尚未重构为分项系数叠加结构。
+- 正式训练、收敛验证、v1.0 验收尚未开始。
+- `eval_frequency` 在 `configs/train_config.py` 中是预留字段，当前未在训练循环中使用。
+- 后续 `BrokenPipeError: [WinError 232] 管道正在被关闭` 是 AsyncVectorEnv 的 Worker 崩溃，与 `_build_episode_cfg()` 的 `ep/episode_cfg` 殷留问题无关，待后续排查。
+
+---
 
 ## [v0.5.8] - 参数集中化第二阶段（训练侧 + Agent 侧）
 **日期：2026-04-21**

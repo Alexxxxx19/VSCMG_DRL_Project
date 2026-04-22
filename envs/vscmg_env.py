@@ -210,47 +210,47 @@ class VSCMGEnv(gym.Env):
 
         # randomization（使用 self.np_random；首次 reset 尚未 init 时跳过）
         if self.np_random is not None:
-            ep.apply_randomization(self.np_random)
+            episode_cfg.apply_randomization(self.np_random)
 
-        # options 覆盖（仅写 ep，不写 self.cfg）
+        # options 覆盖
         if options is not None:
             # 整体配置替换
             if "config" in options and options["config"] is not None:
-                ep = copy.deepcopy(options["config"])
+                episode_cfg = copy.deepcopy(options["config"])
 
             # J_sc 覆盖 → 触发 dynamics 同步
             if "j_sc" in options and options["j_sc"] is not None:
-                ep.current_j_sc = np.asarray(options["j_sc"], dtype=np.float64)
+                episode_cfg.current_j_sc = np.asarray(options["j_sc"], dtype=np.float64)
 
             # I_w 覆盖
             if "i_w" in options and options["i_w"] is not None:
-                ep.current_i_w = np.asarray(options["i_w"], dtype=np.float64)
+                episode_cfg.current_i_w = np.asarray(options["i_w"], dtype=np.float64)
 
             # 飞轮偏置倍数覆盖
             if "omega_bias_factor" in options and options["omega_bias_factor"] is not None:
                 factor = float(options["omega_bias_factor"])
-                ep.current_omega_w_nominal = ep.nominal_omega_w[0] * factor
-                ep.current_omega_w = np.full(4, ep.current_omega_w_nominal)
+                episode_cfg.current_omega_w_nominal = episode_cfg.nominal_omega_w[0] * factor
+                episode_cfg.current_omega_w = np.full(4, episode_cfg.current_omega_w_nominal)
 
             # 初始姿态误差覆盖
             if "init_attitude_deg" in options and options["init_attitude_deg"] is not None:
-                ep.current_init_attitude_deg = float(options["init_attitude_deg"])
+                episode_cfg.current_init_attitude_deg = float(options["init_attitude_deg"])
 
             # 初始角速度覆盖
             if "init_omega" in options and options["init_omega"] is not None:
-                ep.current_init_omega = np.asarray(options["init_omega"], dtype=np.float64)
+                episode_cfg.current_init_omega = np.asarray(options["init_omega"], dtype=np.float64)
 
             # 外扰开关覆盖
             if "disturbance_enabled" in options and options["disturbance_enabled"] is not None:
-                ep.disturbance.enabled = bool(options["disturbance_enabled"])
+                episode_cfg.disturbance.enabled = bool(options["disturbance_enabled"])
 
             # 延迟开关覆盖
             if "delay_enabled" in options and options["delay_enabled"] is not None:
-                ep.delay.enabled = bool(options["delay_enabled"])
+                episode_cfg.delay.enabled = bool(options["delay_enabled"])
             if "delay_tau" in options and options["delay_tau"] is not None:
-                ep.delay.tau = float(options["delay_tau"])
+                episode_cfg.delay.tau = float(options["delay_tau"])
 
-        return ep
+        return episode_cfg
 
     # =======================================================================
     # Gymnasium 接口

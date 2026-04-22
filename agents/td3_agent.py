@@ -159,6 +159,8 @@ class TD3:
         critic_lr: float = 3e-4,
         actor_lr: float = 3e-4,
         delay: int = 2,
+        policy_noise: float = 0.5,
+        noise_clip: float = 0.5,
         device: str = "cpu"
     ):
         """
@@ -175,6 +177,8 @@ class TD3:
             critic_lr: Critic 学习率
             actor_lr: Actor 学习率
             delay: 策略更新延迟频率
+            policy_noise: 目标策略平滑噪声标准差
+            noise_clip: 目标策略平滑噪声截断范围
             device: 计算设备
         """
         self.action_dim = action_dim
@@ -183,6 +187,8 @@ class TD3:
         self.tau = tau
         self.gamma = gamma
         self.delay = delay
+        self.policy_noise = policy_noise
+        self.noise_clip = noise_clip
         self.device = device
         self.total_count = 0
 
@@ -265,8 +271,8 @@ class TD3:
             next_actions = self.target_actor(next_states)
 
             # 目标策略平滑：添加截断噪声
-            noise = torch.randn_like(next_actions) * 0.5  # 噪声标准差 0.5
-            noise = torch.clamp(noise, -0.5, 0.5)  # 截断到 ±0.5
+            noise = torch.randn_like(next_actions) * self.policy_noise
+            noise = torch.clamp(noise, -self.noise_clip, self.noise_clip)
             next_actions = next_actions + noise
             next_actions = torch.clamp(next_actions, -self.action_bound, self.action_bound)
 

@@ -162,8 +162,8 @@ def print_config_snapshot(train_cfg: TrainConfig, agent_cfg: AgentConfig,
     print(f"    tau             = {agent_cfg.tau}")
     print(f"    policy_delay    = {agent_cfg.policy_delay}")
     print(f"    sigma           = {agent_cfg.sigma}")
-    print(f"    policy_noise    = {agent_cfg.policy_noise} (预留，当前未接入)")
-    print(f"    noise_clip      = {agent_cfg.noise_clip} (预留，当前未接入)")
+    print(f"    policy_noise    = {agent_cfg.policy_noise}")
+    print(f"    noise_clip      = {agent_cfg.noise_clip}")
     print("=" * 60)
 
 
@@ -237,6 +237,8 @@ if __name__ == "__main__":
         critic_lr=agent_cfg.critic_lr,
         actor_lr=agent_cfg.actor_lr,
         delay=agent_cfg.policy_delay,
+        policy_noise=agent_cfg.policy_noise,
+        noise_clip=agent_cfg.noise_clip,
         device=agent_cfg.device,
     )
     device_torch = torch.device(agent_cfg.device)
