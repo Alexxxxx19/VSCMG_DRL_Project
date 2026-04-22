@@ -14,6 +14,7 @@ import copy
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
+from dataclasses import dataclass
 from typing import Optional
 
 from envs.dynamics import SpacecraftDynamics
@@ -41,7 +42,7 @@ def quaternion_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
         w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
         w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
         w1 * y2 + y1 * w2 + z1 * x2 - x1 * z2,
-        w1 * z2 + z1 * w2 + x1 * y2 - y1 * x2,
+        w1 * z2 + z1 * w2 + x1 * y2 - y1 * z2,
     ])
 
 
@@ -108,6 +109,29 @@ def quaternion_kinematics_dynamics(q: np.ndarray, omega: np.ndarray) -> np.ndarr
         [ wz, -wy,  wx,  0.0]
     ])
     return 0.5 * omega_matrix @ q
+
+
+# =============================================================================
+# v1.0 Reward 系数配置
+# =============================================================================
+
+@dataclass
+class RewardConfig:
+    """
+    v1.0 reward 分项权重配置
+
+    调参原则：
+      - w_att        最大：姿态误差是 v1.0 第一目标
+      - w_omega      次之：阻尼辅助，不能压过姿态主任务
+      - w_wheel_bias 再次：飞轮偏置维持，辅助目标
+      - w_act        最小：饱和抑制辅助项
+
+    以后想关掉某项：直接把对应 w 改为 0 即可。
+    """
+    w_att:        float = 1.0   # 姿态误差主项
+    w_omega:      float = 0.1   # 角速度抑制
+    w_wheel_bias: float = 0.05  # 飞轮偏置保持
+    w_act:        float = 0.01  # 执行器抑制（最小）
 
 
 # =============================================================================
@@ -183,6 +207,9 @@ class VSCMGEnv(gym.Env):
 
         # 缓存上一步框架角速度指令
         self._delta_dot_cache = np.zeros(4)
+
+        # ---- reward 系数配置（v1.0 集中调参入口）----
+        self.reward_cfg = RewardConfig()
 
     # =======================================================================
     # 内部辅助方法
@@ -264,7 +291,7 @@ class VSCMGEnv(gym.Env):
             seed: 随机种子
             options: 可选字典，支持以下 episode 级覆盖字段：
                 - "config": VSCMGEnvConfig，替换整个基线配置
-                - "j_sc": np.ndarray，覆盖 J_sc（触发 dynamics 同步）
+                - "j_sc": np.ndarray，覆盖 J_sc（触发 dynamics 同��）
                 - "i_w": np.ndarray，覆盖飞轮转动惯量 [4]
                 - "omega_bias_factor": float，飞轮偏置倍数（相对 3000 rpm）
                 - "init_attitude_deg": float，初始姿态误差角（度）
@@ -284,7 +311,7 @@ class VSCMGEnv(gym.Env):
         # 2. dynamics J 同步（无条件）
         self._sync_dynamics()
 
-        # --- 目标姿态（固定） ---
+        # --- 目标姿态（固定）---
         self.q_target = np.array([1.0, 0.0, 0.0, 0.0])
 
         # --- 初始姿态误差 ---
@@ -375,14 +402,22 @@ class VSCMGEnv(gym.Env):
         self.omega_w += wheel_accel_cmd * self.episode_cfg.dt
         self.h_w = self.I_w * self.omega_w
 
-        # 奖励（保持原样，不改 reward 结构）
+        # ---- v1.0 reward 计算（分项叠加结构）----
         q_err = compute_orientation_error_quaternion(self.q, self.q_target)
         sigma_err = orientation_error_quaternion_to_sigma_err(q_err)
-        reward = -(
-            np.sum(sigma_err ** 2)
-            + 0.1 * np.sum(self.omega ** 2)
-            + 0.01 * np.sum(action ** 2)
-        )
+
+        sigma_err_sq = np.sum(sigma_err ** 2)
+        omega_sq = np.sum(self.omega ** 2)
+        omega_w_tilde = (self.omega_w - self.omega_w_nominal) / self.omega_w_nominal
+        wheel_bias_sq = np.sum(omega_w_tilde ** 2)
+        action_sq = np.sum(action ** 2)
+
+        att_penalty = self.reward_cfg.w_att * sigma_err_sq
+        omega_penalty = self.reward_cfg.w_omega * omega_sq
+        wheel_bias_penalty = self.reward_cfg.w_wheel_bias * wheel_bias_sq
+        act_penalty = self.reward_cfg.w_act * action_sq
+
+        reward = -(att_penalty + omega_penalty + wheel_bias_penalty + act_penalty)
 
         self.current_step += 1
 
@@ -390,11 +425,22 @@ class VSCMGEnv(gym.Env):
         truncated = self.current_step >= self.episode_cfg.max_episode_steps
 
         obs = self._get_obs().astype(np.float32)
-        return obs, reward, terminated, truncated, {}
+        info = {
+            "reward_total": float(reward),
+            "reward_att_penalty": float(att_penalty),
+            "reward_omega_penalty": float(omega_penalty),
+            "reward_wheel_bias_penalty": float(wheel_bias_penalty),
+            "reward_act_penalty": float(act_penalty),
+            "sigma_err_sq": float(sigma_err_sq),
+            "omega_sq": float(omega_sq),
+            "wheel_bias_sq": float(wheel_bias_sq),
+            "action_sq": float(action_sq),
+        }
+        return obs, reward, terminated, truncated, info
 
     def _get_obs(self) -> np.ndarray:
         """
-        组装 22 维观测向量（v1.0 接口，固定不变）
+        组装 22 维观测向量��v1.0 接口，固定不变）
 
         顺序：
         [0:3]   sigma_err     - 姿态误差 MRP [3]

@@ -1,4 +1,37 @@
-# VSCMG DRL 控制系统迭代日���
+# VSCMG DRL 控制系统迭代日志
+
+## [v0.5.10] - v1.0 Reward 重构与工程文案统一
+**日期：2026-04-22**
+
+### Changed (重构)
+- `envs/vscmg_env.py`：将 reward 从旧版三项硬编码结构重构为 v1.0 分项叠加结构：
+  - `R_att`：姿态误差项，基于 `||sigma_err||²`
+  - `R_omega`：角速度抑制项，基于 `||omega_B||²`
+  - `R_wheel_bias`：飞轮偏置保持项，基于 `||Omega_w_tilde||²`
+  - `R_act`：执行器抑制项，基于 `||action||²`
+- `envs/vscmg_env.py`：新增 `RewardConfig`，将 `w_att / w_omega / w_wheel_bias / w_act` 集中管理，便于后续单项开关与调参。
+- `envs/vscmg_env.py`：`step()` 返回 `info` reward breakdown，包含各 penalty 与 `sigma_err_sq / omega_sq / wheel_bias_sq / action_sq`，便于后续训练观察与调参。
+- `train.py`：统一更新运行时版本标识、banner、CLI description 与完成文案到 `v0.5.10`。
+- `configs/env_config.py`：修正文档字符串中的过期版本描述，使其与当前 v1.0 默认语义一致。
+
+### Verified (验证)
+- 环境级验证通过：
+  - `env = VSCMGEnv(); obs, info = env.reset(seed=42)` 正常
+  - `env.step(np.zeros(8, dtype=np.float32))` 正常返回
+  - `reward` 为有限数，`info` 中 reward breakdown 各分项均为有限数
+  - 返回结构符合 Gymnasium 规范，22 维观测接口保持不变
+- 训练 smoke test 通过：
+  - `python train.py --num_envs 4 --batch_size 256 --update_every 50 --device cpu --max_steps 20000`
+  - 训练可正常启动并越过首次 `envs.reset(...)`
+  - heartbeat、episode、checkpoint 正常
+  - 无 NaN / Inf / traceback，正常退出
+- 工程稳定性排查结论：
+  - 在 `num_envs=1, CPU` / `num_envs=4, CPU` / `num_envs=16, CUDA` 三组 20k step smoke test 条件下，未复现 AsyncVectorEnv / BrokenPipeError / WinError 232 / worker 异常退出问题。
+
+### Notes (范围说明)
+- 本版本完成的是 v1.0 reward 结构重构、最小训练链路验证与工程文案统一，不代表 v1.0 验收已经完成。
+- 当前 reward 默认权重为保守初始值，后续仍需通过 200k~500k 步短训观察 `reward_total` 与各分项趋势，再决定是否继续调参。
+- `w_act` 当前基于归一化动作量而非物理缩放动作量；若后续观察到执行器饱和或飞轮偏置漂移，再决定是否进一步调整。
 
 ## [v0.5.9] - 启动 Bug 修复与 TD3 平滑噪声配置接通
 **日期：2026-04-22**

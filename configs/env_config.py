@@ -289,7 +289,7 @@ class VSCMGEnvConfig:
 def make_default_config() -> VSCMGEnvConfig:
     """
     v1.0 默认配置：所有随机化关闭，所有外扰关闭，所有延迟关闭，
-    保持与 v0.5.6 完全一致的默认行为。
+    与 v1.0 验收基线完全一致。
     """
     return VSCMGEnvConfig(
         nominal_j_sc=np.diag([100.0, 100.0, 100.0]),

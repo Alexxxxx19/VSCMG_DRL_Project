@@ -1,8 +1,8 @@
 """
 VSCMG 姿态控制强化学习训练脚本
-TD3 算法 — 多环境异步并行训练主循环 (v0.5.8)
+TD3 算法 — 多环境异步并行训练主循环 (v0.5.10)
 
-参数集中化第二阶段：训练侧 + Agent 侧
+v1.0 Reward 重构与工程稳定性验证
 ========================================
 
 三层配置入口：
@@ -62,7 +62,7 @@ def parse_args():
     所有这些参数在 train_config.py 中都有对应的默认值，
     此处 CLI 值会覆盖默认值。
     """
-    parser = argparse.ArgumentParser(description="VSCMG TD3 并行训练脚本 v0.5.8")
+    parser = argparse.ArgumentParser(description="VSCMG TD3 并行训练脚本 v0.5.10")
 
     # --- 并行与设备 ---
     parser.add_argument("--num_envs", type=int, default=None,
@@ -281,7 +281,7 @@ if __name__ == "__main__":
     # 训练主循环（全局步数驱动）
     # ============================================================================
     print("=" * 60)
-    print("VSCMG TD3 异步并行训练已启动 (v0.5.8 参数集中化)")
+    print("VSCMG TD3 异步并行训练已启动 (v0.5.10)")
     print("=" * 60)
 
     # 初始化环境（首次 reset 时设置环境 seed）
@@ -411,6 +411,6 @@ if __name__ == "__main__":
     writer.close()
     envs.close()
     print("=" * 60)
-    print("训练完成 (v0.5.8 参数集中化版)")
+    print("训练完成 (v0.5.10)")
     print(f"最佳奖励: {best_reward:.4f}")
     print("=" * 60)
