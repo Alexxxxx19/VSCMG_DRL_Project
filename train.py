@@ -1,6 +1,6 @@
 """
 VSCMG 姿态控制强化学习训练脚本
-TD3 算法 — ��环境异步并行训练主循环 (v0.5.11)
+TD3 算法 — ��环境异步并行训练主循环 (v0.5.12)
 
 v1.0 Reward 重构与工程稳定性验证
 ========================================
@@ -36,6 +36,7 @@ os.environ["OMP_NUM_THREADS"] = "1"
 import argparse
 import datetime
 import random
+import time as _time_module
 import torch
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
@@ -120,7 +121,7 @@ def parse_args():
     所有这些参数在 train_config.py 中都有对应的默认值，
     此处 CLI 值会覆盖默认值。
     """
-    parser = argparse.ArgumentParser(description="VSCMG TD3 并行训练脚本 v0.5.11")
+    parser = argparse.ArgumentParser(description="VSCMG TD3 并行训练脚本 v0.5.12")
 
     # --- 并行与设备 ---
     parser.add_argument("--num_envs", type=int, default=None,
@@ -333,25 +334,46 @@ if __name__ == "__main__":
     # 训练状态跟踪
     # ============================================================================
     best_reward = -1e6
+    best_step = None
+    train_start_time = _time_module.time()
     episode_rewards = np.zeros(train_cfg.num_envs, dtype=np.float32)
     episode_lengths = np.zeros(train_cfg.num_envs, dtype=np.int32)
     first_episode_done = False  # 心跳静默开关
 
-    def _log_and_checkpoint(ep_reward: float):
+    def _episode_summary(ep_reward: float, ep_step: int, saved: str, path: str | None):
+        """每次 episode 结束时打印统一风格的 [EpisodeSummary]"""
+        elapsed = _time_module.time() - train_start_time
+        elapsed_hms = str(datetime.timedelta(seconds=int(elapsed)))
+        best_str = f"{best_reward:.4f}@{best_step}" if best_step is not None else "None"
+        print(f"[EpisodeSummary] run={run_name}"
+              f" | step={ep_step}"
+              f" | ep_reward={ep_reward:.4f}"
+              f" | best_so_far={best_str}"
+              f" | saved={saved}"
+              f" | path={path}"
+              f" | elapsed={elapsed_hms}")
+
+    def _log_and_checkpoint(ep_reward: float, ep_step: int):
         """全局最佳模型保存（基于单 episode 得分触发，不写 TensorBoard）"""
-        global best_reward, first_episode_done
+        global best_reward, best_step, first_episode_done
         first_episode_done = True
+        saved = "none"
+        path = None
         if ep_reward > best_reward:
             best_reward = ep_reward
+            best_step = ep_step
             best_path = os.path.join(model_dir, "best_episode_reward.pth")
             agent.save_model(best_path)
             print(f"  >> [Checkpoint] New best reward: {best_reward:.4f} -> {best_path}")
+            saved = "best"
+            path = best_path
+        _episode_summary(ep_reward, ep_step, saved, path)
 
     # ============================================================================
     # 训练主循环（全局步数驱动）
     # ============================================================================
     print("=" * 60)
-    print("VSCMG TD3 异步并行训练已启动 (v0.5.11)")
+    print("VSCMG TD3 异步并行训练已启动 (v0.5.12)")
     print("=" * 60)
 
     # 初始化环境（首次 reset 时设置环境 seed）
@@ -376,6 +398,10 @@ if __name__ == "__main__":
                 'global_step': global_step,
             }, checkpoint_path)
             print(f"[Checkpoint] 检查点已保存至: {checkpoint_path}")
+            elapsed = _time_module.time() - train_start_time
+            elapsed_hms = str(datetime.timedelta(seconds=int(elapsed)))
+            best_str = f"{best_reward:.4f}@{best_step}" if best_step is not None else "None"
+            print(f"[SaveSummary] type=checkpoint | run={run_name} | step={global_step} | best_so_far={best_str} | elapsed={elapsed_hms} | path={checkpoint_path}")
 
         # --- 批量动作选择 ---
         if global_step < train_cfg.start_steps:
@@ -433,7 +459,10 @@ if __name__ == "__main__":
 
         # --- 策略 1：infos["final_info"]（标准 Gymnasium 向量环境结构）---
         final_infos = infos.get("final_info")
-        if final_infos is not None:
+        if final_infos is not None and any(
+            final_infos[i] is not None and final_infos[i].get("episode") is not None
+            for i in range(train_cfg.num_envs)
+        ):
             batch_rewards = []
             for i in range(train_cfg.num_envs):
                 ep_info = final_infos[i]
@@ -443,17 +472,14 @@ if __name__ == "__main__":
                     episode_length = int(ep.get("l", 0))
                     if episode_reward != 0.0 or episode_length != 0:
                         batch_rewards.append(episode_reward)
-                        _log_and_checkpoint(episode_reward)
+                        _log_and_checkpoint(episode_reward, global_step)
             if len(batch_rewards) > 0:
                 mean_reward = float(np.mean(batch_rewards))
                 writer.add_scalar("Global/Mean_Reward", mean_reward, global_step)
                 writer.flush()
 
-        # --- 策略 2：备用（未开启 episode 记录时）---
-        if final_infos is None or all(
-            final_infos[i] is None or final_infos[i].get("episode") is None
-            for i in range(train_cfg.num_envs)
-        ):
+        # --- 策略 2：备用（未开启 episode 记录时，或 final_info 未覆盖的部分 env）---
+        else:
             batch_rewards = []
             for i in range(train_cfg.num_envs):
                 done = dones[i] or truncateds[i]
@@ -462,7 +488,7 @@ if __name__ == "__main__":
                     episode_length = int(episode_lengths[i])
                     if episode_reward != 0.0 or episode_length != 0:
                         batch_rewards.append(episode_reward)
-                        _log_and_checkpoint(episode_reward)
+                        _log_and_checkpoint(episode_reward, global_step)
             if len(batch_rewards) > 0:
                 mean_reward = float(np.mean(batch_rewards))
                 writer.add_scalar("Global/Mean_Reward", mean_reward, global_step)
@@ -507,21 +533,32 @@ if __name__ == "__main__":
     # ============================================================================
     # 训练结束
     # ============================================================================
-    # 保存 final 模型
-    final_path = os.path.join(model_dir, f"final_step_{train_cfg.total_steps}.pth")
+    elapsed = _time_module.time() - train_start_time
+    elapsed_hms = str(datetime.timedelta(seconds=int(elapsed)))
+    actual_steps = global_step + train_cfg.num_envs
+    final_path = os.path.join(model_dir, f"final_step_{actual_steps}.pth")
     torch.save({
         'actor_state_dict': agent.actor.state_dict(),
         'critic_1_state_dict': agent.critic_1.state_dict(),
         'critic_2_state_dict': agent.critic_2.state_dict(),
-        'global_step': train_cfg.total_steps,
+        'global_step': actual_steps,
     }, final_path)
     print(f"[Checkpoint] 最终模型已保存至: {final_path}")
+    best_str = f"{best_reward:.4f}@{best_step}" if best_step is not None else "None"
+    print(f"[SaveSummary] type=final | run={run_name} | step={actual_steps} | best_so_far={best_str} | elapsed={elapsed_hms} | path={final_path}")
 
     writer.close()
     envs.close()
+
+    # --- TrainSummary ---
+    best_str = f"{best_reward:.4f}@{best_step}" if best_step is not None else "None"
     print("=" * 60)
-    print("训练完成 (v0.5.11)")
-    print(f"run_name: {run_name}")
-    print(f"模型目录: {model_dir}")
-    print(f"最佳奖励: {best_reward:.4f}")
+    print("[TrainSummary]"
+          f" run={run_name}"
+          f" | steps={actual_steps}"
+          f" | elapsed={elapsed_hms}"
+          f" | device={train_cfg.device}"
+          f" | num_envs={train_cfg.num_envs}"
+          f" | best_ep_reward={best_str}"
+          f" | final={final_path}")
     print("=" * 60)

@@ -1,5 +1,28 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.12] - 训练过程日志增强
+**日期：2026-04-23**
+
+### Changed (增强)
+- `train.py`：
+  - 新增 `EpisodeSummary` 输出：每次 episode 结束都打印一行摘要，包含 `run / step / ep_reward / best_so_far / saved / path`
+  - 新增 `SaveSummary` 输出：在保存 `best / checkpoint / final` 时打印统一格式摘要
+  - 新增训练结束 `TrainSummary` 输出
+  - 保留原有 heartbeat 与 checkpoint 日志，不改变训练逻辑
+  - 修复策略 1/策略 2 同时触发导致同一 episode 打印两次的 bug（改为 `if ... elif ... else` 互斥）
+
+### Verified (验证)
+- 短 smoke run 下：
+  - 能看到 `EpisodeSummary`，`best` 保存时 `saved=best`，未保存时 `saved=none`
+  - `SaveSummary` 在 `best / checkpoint / final` 保存时正常打印
+  - `TrainSummary` 在训练结束时打印
+  - 同一 episode 无重复打印
+
+### Notes (说明)
+- 本版本主要提升训练过程可观测性
+- 不涉及 reward 结构改动
+- 不代表控制性能验收完成
+
 ## [v0.5.11] - Reward 拆项重构与实验目录独立化
 **日期：2026-04-23**
 
