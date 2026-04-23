@@ -1,6 +1,6 @@
 """
 VSCMG 姿态控制强化学习训练脚本
-TD3 算法 — 多环境异步并行训练主循环 (v0.5.10)
+TD3 算法 — ��环境异步并行训练主循环 (v0.5.11)
 
 v1.0 Reward 重构与工程稳定性验证
 ========================================
@@ -41,10 +41,68 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 
-from envs.vscmg_env import VSCMGEnv
+from envs.vscmg_env import VSCMGEnv, RewardConfig
 from agents.td3_agent import TD3, ReplayBuffer
 from configs.train_config import TrainConfig, make_default_train_config
 from configs.agent_config import AgentConfig, make_default_agent_config
+import json
+
+
+def generate_run_name(train_cfg: TrainConfig, agent_cfg: AgentConfig, reward_cfg: RewardConfig) -> str:
+    """
+    生成唯一实验标识符
+
+    包含：版本号 + 时间戳 + 并行数 + seed + reward 权重摘要
+    """
+    version = "v0.5.11"
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    reward_summary = f"att{reward_cfg.w_att}_om{reward_cfg.w_omega}_wb{reward_cfg.w_wheel_bias}_ga{reward_cfg.w_gimbal_act}_wa{reward_cfg.w_wheel_act}"
+    return f"{version}_{timestamp}_envs{train_cfg.num_envs}_seed{train_cfg.seed}_{reward_summary}"
+
+
+def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
+                    agent_cfg: AgentConfig, reward_cfg: RewardConfig):
+    """保存实验配置到 JSON"""
+    config = {
+        "run_name": run_name,
+        "version": "v0.5.11",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "train_config": {
+            "num_envs": train_cfg.num_envs,
+            "device": train_cfg.device,
+            "total_steps": train_cfg.total_steps,
+            "start_steps": train_cfg.start_steps,
+            "update_every": train_cfg.update_every,
+            "update_times": train_cfg.update_times,
+            "batch_size": train_cfg.batch_size,
+            "replay_capacity": train_cfg.replay_capacity,
+            "seed": train_cfg.seed,
+        },
+        "agent_config": {
+            "state_dim": agent_cfg.state_dim,
+            "action_dim": agent_cfg.action_dim,
+            "hidden_dim": agent_cfg.hidden_dim,
+            "gamma": agent_cfg.gamma,
+            "tau": agent_cfg.tau,
+            "policy_delay": agent_cfg.policy_delay,
+            "sigma": agent_cfg.sigma,
+            "actor_lr": agent_cfg.actor_lr,
+            "critic_lr": agent_cfg.critic_lr,
+            "policy_noise": agent_cfg.policy_noise,
+            "noise_clip": agent_cfg.noise_clip,
+        },
+        "reward_config": {
+            "w_att": reward_cfg.w_att,
+            "w_omega": reward_cfg.w_omega,
+            "w_wheel_bias": reward_cfg.w_wheel_bias,
+            "w_gimbal_act": reward_cfg.w_gimbal_act,
+            "w_wheel_act": reward_cfg.w_wheel_act,
+        },
+    }
+
+    config_path = os.path.join(model_dir, "run_config.json")
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
 
 
 def make_env():
@@ -62,7 +120,7 @@ def parse_args():
     所有这些参数在 train_config.py 中都有对应的默认值，
     此处 CLI 值会覆盖默认值。
     """
-    parser = argparse.ArgumentParser(description="VSCMG TD3 并行训练脚本 v0.5.10")
+    parser = argparse.ArgumentParser(description="VSCMG TD3 并行训练脚本 v0.5.11")
 
     # --- 并行与设备 ---
     parser.add_argument("--num_envs", type=int, default=None,
@@ -250,13 +308,26 @@ if __name__ == "__main__":
     print_config_snapshot(train_cfg, agent_cfg, state_dim, action_dim)
 
     # ============================================================================
-    # 第六步：TensorBoard 日志
+    # 第六步：生成 run_name 和模型目录
+    # ============================================================================
+    reward_cfg = RewardConfig()  # 读取当前默认 reward 配置
+    run_name = generate_run_name(train_cfg, agent_cfg, reward_cfg)
+    model_dir = os.path.join(train_cfg.checkpoint_dir, run_name)
+    os.makedirs(model_dir, exist_ok=True)
+
+    # 保存实验配置
+    save_run_config(model_dir, run_name, train_cfg, agent_cfg, reward_cfg)
+
+    # ============================================================================
+    # 第七步：TensorBoard 日志
     # ============================================================================
     ts = datetime.datetime.now().strftime("%m%d_%H%M%S")
     log_dir = f"{train_cfg.log_dir_base}/vscmg_parallel_{train_cfg.num_envs}envs_{ts}"
     os.makedirs(log_dir, exist_ok=True)
     writer = SummaryWriter(log_dir=log_dir, flush_secs=train_cfg.tb_flush_secs)
-    print(f"\n[Storage] TensorBoard 日志正实时写入绝对路径: {os.path.abspath(writer.log_dir)}\n")
+    print(f"\n[Storage] run_name: {run_name}")
+    print(f"[Storage] 模型保存目录: {os.path.abspath(model_dir)}")
+    print(f"[Storage] TensorBoard 日志正实时写入绝对路径: {os.path.abspath(writer.log_dir)}\n")
 
     # ============================================================================
     # 训练状态跟踪
@@ -272,16 +343,15 @@ if __name__ == "__main__":
         first_episode_done = True
         if ep_reward > best_reward:
             best_reward = ep_reward
-            os.makedirs(train_cfg.checkpoint_dir, exist_ok=True)
-            best_path = os.path.join(train_cfg.checkpoint_dir, "best_model_parallel.pth")
+            best_path = os.path.join(model_dir, "best_episode_reward.pth")
             agent.save_model(best_path)
-            print(f"  >> [Checkpoint] New best reward: {best_reward:.4f} -> Model saved.")
+            print(f"  >> [Checkpoint] New best reward: {best_reward:.4f} -> {best_path}")
 
     # ============================================================================
     # 训练主循环（全局步数驱动）
     # ============================================================================
     print("=" * 60)
-    print("VSCMG TD3 异步并行训练已启动 (v0.5.10)")
+    print("VSCMG TD3 异步并行训练已启动 (v0.5.11)")
     print("=" * 60)
 
     # 初始化环境（首次 reset 时设置环境 seed）
@@ -296,20 +366,16 @@ if __name__ == "__main__":
         if not first_episode_done and global_step > 0 and global_step % 2000 == 0:
             print(f"[Heartbeat] Training progress: {global_step} steps processed...")
 
-        # --- 定期保存检查点（每 checkpoint_frequency 步） ---
+        # --- 定期保存检查点（每 checkpoint_frequency 步）---
         if global_step > 0 and global_step % train_cfg.checkpoint_frequency == 0:
-            os.makedirs(train_cfg.checkpoint_dir, exist_ok=True)
-            checkpoint_path = os.path.join(
-                train_cfg.checkpoint_dir,
-                f"checkpoint_step_{global_step}.pth"
-            )
+            checkpoint_path = os.path.join(model_dir, f"checkpoint_step_{global_step}.pth")
             torch.save({
                 'actor_state_dict': agent.actor.state_dict(),
                 'critic_1_state_dict': agent.critic_1.state_dict(),
                 'critic_2_state_dict': agent.critic_2.state_dict(),
                 'global_step': global_step,
             }, checkpoint_path)
-            print(f"[Checkpoint] 模型已保存至: {checkpoint_path}")
+            print(f"[Checkpoint] 检查点已保存至: {checkpoint_path}")
 
         # --- 批量动作选择 ---
         if global_step < train_cfg.start_steps:
@@ -441,9 +507,21 @@ if __name__ == "__main__":
     # ============================================================================
     # 训练结束
     # ============================================================================
+    # 保存 final 模型
+    final_path = os.path.join(model_dir, f"final_step_{train_cfg.total_steps}.pth")
+    torch.save({
+        'actor_state_dict': agent.actor.state_dict(),
+        'critic_1_state_dict': agent.critic_1.state_dict(),
+        'critic_2_state_dict': agent.critic_2.state_dict(),
+        'global_step': train_cfg.total_steps,
+    }, final_path)
+    print(f"[Checkpoint] 最终模型已保存至: {final_path}")
+
     writer.close()
     envs.close()
     print("=" * 60)
-    print("训练完成 (v0.5.10)")
+    print("训练完成 (v0.5.11)")
+    print(f"run_name: {run_name}")
+    print(f"模型目录: {model_dir}")
     print(f"最佳奖励: {best_reward:.4f}")
     print("=" * 60)

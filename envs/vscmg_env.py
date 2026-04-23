@@ -118,20 +118,22 @@ def quaternion_kinematics_dynamics(q: np.ndarray, omega: np.ndarray) -> np.ndarr
 @dataclass
 class RewardConfig:
     """
-    v1.0 reward 分项权重配置
+    v1.0 reward 分项权重配置（拆项版本）
 
     调参原则：
       - w_att        最大：姿态误差是 v1.0 第一目标
       - w_omega      次之：阻尼辅助，不能压过姿态主任务
       - w_wheel_bias 再次：飞轮偏置维持，辅助目标
-      - w_act        最小：饱和抑制辅助项
+      - w_gimbal_act  最小：框架动作饱和抑制（前 4 维）
+      - w_wheel_act  最小：飞轮动作饱和抑制（后 4 维）
 
     以后想关掉某项：直接把对应 w 改为 0 即可。
     """
     w_att:        float = 1.0   # 姿态误差主项
-    w_omega:      float = 0.1   # 角速度抑制（v1.0 第二阶段：引入少量阻尼）
-    w_wheel_bias: float = 0.01  # 飞轮偏置保持
-    w_act:        float = 0.005 # 执行器抑制（最小）
+    w_omega:      float = 0.2   # 角速度抑制（v1.0 第二阶段：引入少量阻尼）
+    w_wheel_bias: float = 0.05  # 飞轮偏置保持
+    w_gimbal_act: float = 0.01  # 框架动作抑制（前 4 维）
+    w_wheel_act:  float = 0.02  # 飞轮动作抑制（后 4 维）
 
 
 # =============================================================================
@@ -410,14 +412,19 @@ class VSCMGEnv(gym.Env):
         omega_sq = np.sum(self.omega ** 2)
         omega_w_tilde = (self.omega_w - self.omega_w_nominal) / self.omega_w_nominal
         wheel_bias_sq = np.sum(omega_w_tilde ** 2)
-        action_sq = np.sum(action ** 2)
+
+        # 拆分动作项：框架（前4维）+ 飞轮（后4维）
+        gimbal_action_sq = np.sum(action[:4] ** 2)
+        wheel_action_sq = np.sum(action[4:] ** 2)
+        action_sq = gimbal_action_sq + wheel_action_sq  # 兼容旧逻辑
 
         att_penalty = self.reward_cfg.w_att * sigma_err_sq
         omega_penalty = self.reward_cfg.w_omega * omega_sq
         wheel_bias_penalty = self.reward_cfg.w_wheel_bias * wheel_bias_sq
-        act_penalty = self.reward_cfg.w_act * action_sq
+        gimbal_act_penalty = self.reward_cfg.w_gimbal_act * gimbal_action_sq
+        wheel_act_penalty = self.reward_cfg.w_wheel_act * wheel_action_sq
 
-        reward = -(att_penalty + omega_penalty + wheel_bias_penalty + act_penalty)
+        reward = -(att_penalty + omega_penalty + wheel_bias_penalty + gimbal_act_penalty + wheel_act_penalty)
 
         self.current_step += 1
 
@@ -430,11 +437,14 @@ class VSCMGEnv(gym.Env):
             "reward_att_penalty": float(att_penalty),
             "reward_omega_penalty": float(omega_penalty),
             "reward_wheel_bias_penalty": float(wheel_bias_penalty),
-            "reward_act_penalty": float(act_penalty),
+            "reward_gimbal_act_penalty": float(gimbal_act_penalty),
+            "reward_wheel_act_penalty": float(wheel_act_penalty),
             "sigma_err_sq": float(sigma_err_sq),
             "omega_sq": float(omega_sq),
             "wheel_bias_sq": float(wheel_bias_sq),
             "action_sq": float(action_sq),
+            "gimbal_action_sq": float(gimbal_action_sq),
+            "wheel_action_sq": float(wheel_action_sq),
         }
         return obs, reward, terminated, truncated, info
 

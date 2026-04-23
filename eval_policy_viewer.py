@@ -152,9 +152,10 @@ def run_episode_with_logging(env, actor, device, seed=42, max_steps=1000):
         'action_1': [], 'action_2': [], 'action_3': [], 'action_4': [],
         'action_5': [], 'action_6': [], 'action_7': [], 'action_8': [],
         'action_abs_mean': [], 'action_sat_rate': [],
-        # Reward breakdown
+        # Reward breakdown（包含新增的拆项指标）
         'reward_total': [], 'sigma_err_sq': [], 'omega_sq': [], 'action_sq': [],
         'wheel_bias_sq_info': [],
+        'gimbal_action_sq': [], 'wheel_action_sq': [],  # 新增：拆项指标
         # 显示层单位（deg / deg/s）
         'roll_deg': [], 'pitch_deg': [], 'yaw_deg': [],
         'omega_x_deg_s': [], 'omega_y_deg_s': [], 'omega_z_deg_s': [], 'omega_norm_deg_s': [],
@@ -216,15 +217,20 @@ def run_episode_with_logging(env, actor, device, seed=42, max_steps=1000):
         history['action_sat_rate'].append(action_sat_rate)
         history['reward_total'].append(reward)
 
-        # 从 info 提取 reward breakdown
+        # 从 info 提取 reward breakdown（包含新增的拆项指标）
         if isinstance(info, dict):
             for key in ['sigma_err_sq', 'omega_sq', 'action_sq']:
                 history[key].append(float(info.get(key, 0.0)))
             history['wheel_bias_sq_info'].append(float(info.get('wheel_bias_sq', 0.0)))
+            # 新增：拆项动作指标
+            history['gimbal_action_sq'].append(float(info.get('gimbal_action_sq', 0.0)))
+            history['wheel_action_sq'].append(float(info.get('wheel_action_sq', 0.0)))
         else:
             for key in ['sigma_err_sq', 'omega_sq', 'action_sq']:
                 history[key].append(0.0)
             history['wheel_bias_sq_info'].append(0.0)
+            history['gimbal_action_sq'].append(0.0)
+            history['wheel_action_sq'].append(0.0)
 
         # 记录显示层数据（deg / deg/s）
         history['roll_deg'].append(euler_deg[0])
@@ -332,10 +338,12 @@ def plot_actuator_metrics(history, output_path, use_chinese):
     ax3_twin.legend(loc='upper right')
     axes[2].grid(True, alpha=0.3)
 
-    # 4. 执行器健康度（action相关指标）
+    # 4. 执行器健康度（action相关指标 + 新增拆项指标）
     axes[3].plot(steps, history['action_sq'], label='action_sq', alpha=0.7)
-    axes[3].plot(steps, history['wheel_bias_sq'], label='wheel_bias_sq', alpha=0.7)
-    axes[3].plot(steps, history['wheel_bias_sq_info'], '--', label='wheel_bias_sq_info', alpha=0.5)
+    axes[3].plot(steps, history['gimbal_action_sq'], '--', label='gimbal_action_sq', alpha=0.7)
+    axes[3].plot(steps, history['wheel_action_sq'], '--', label='wheel_action_sq', alpha=0.7)
+    axes[3].plot(steps, history['wheel_bias_sq'], label='wheel_bias_sq', alpha=0.5)
+    axes[3].plot(steps, history['wheel_bias_sq_info'], ':', label='wheel_bias_sq_info', alpha=0.4)
     ax4_twin = axes[3].twinx()
     ax4_twin.plot(steps, history['action_abs_mean'], 'g-', label='action_abs_mean', alpha=0.5)
     ax4_twin.plot(steps, history['action_sat_rate'], 'm-', label='action_sat_rate', alpha=0.5)
@@ -344,8 +352,8 @@ def plot_actuator_metrics(history, output_path, use_chinese):
     axes[3].set_xlabel('Step')
     axes[3].set_ylabel('Squared Terms')
     ax4_twin.set_ylabel('Action Stats')
-    axes[3].legend(loc='upper left')
-    ax4_twin.legend(loc='upper right')
+    axes[3].legend(loc='upper left', fontsize='small')
+    ax4_twin.legend(loc='upper right', fontsize='small')
     axes[3].grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -372,6 +380,7 @@ def save_csv(history, output_path):
         # Reward breakdown
         'reward_total', 'sigma_err_sq', 'omega_sq', 'action_sq',
         'wheel_bias_sq_info',
+        'gimbal_action_sq', 'wheel_action_sq',  # 新增：拆项指标
         # 显示层单位（deg / deg/s）
         'roll_deg', 'pitch_deg', 'yaw_deg',
         'omega_x_deg_s', 'omega_y_deg_s', 'omega_z_deg_s', 'omega_norm_deg_s',
@@ -415,7 +424,9 @@ def save_summary(history, terminated, truncated, model_path, seed, max_steps,
 
         f.write("【动作统计】\n")
         f.write(f"  平均 |action|:       {np.mean(history['action_abs_mean']):.6f}\n")
-        f.write(f"  平均饱和率:          {np.mean(history['action_sat_rate']):.2%}\n\n")
+        f.write(f"  平均饱和率:          {np.mean(history['action_sat_rate']):.2%}\n")
+        f.write(f"  平均 gimbal_action_sq: {np.mean(history['gimbal_action_sq']):.6f}\n")
+        f.write(f"  平均 wheel_action_sq: {np.mean(history['wheel_action_sq']):.6f}\n\n")
 
         f.write("【输出文件】\n")
         for png_path in png_paths:
@@ -504,6 +515,8 @@ if __name__ == "__main__":
     print(f"最终 ||Omega_tilde||^2: {history['wheel_bias_sq'][-1]:.6f}")
     print(f"平均 |action|:      {np.mean(history['action_abs_mean']):.6f}")
     print(f"平均饱和率:        {np.mean(history['action_sat_rate']):.2%}")
+    print(f"平均 gimbal_action_sq: {np.mean(history['gimbal_action_sq']):.6f}")
+    print(f"平均 wheel_action_sq: {np.mean(history['wheel_action_sq']):.6f}")
     print(f"\n输出文件夹: {output_folder}")
     print(f"  - spacecraft_plots.png (航天器状态)")
     print(f"  - actuator_plots.png (执行器状态)")
