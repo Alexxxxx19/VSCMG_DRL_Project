@@ -1,5 +1,25 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.13] - 评估图模型名显示增强
+**日期：2026-04-24**
+
+### Changed (增强)
+- `eval_policy_viewer.py`：
+  - 在 `spacecraft_plots.png` 中显示当前评估模型文件名
+  - 在 `actuator_plots.png` 中显示当前评估模型文件名
+  - 提高不同 `best / checkpoint / final` 模型评估图的可辨识性
+  - 同步更新用法说明，适配 `models/<run_name>/...` 路径结构
+
+### Verified (验证)
+- 使用已有模型执行最小 eval
+- 两张图均正常生成
+- 图中可见模型名，例如：`best_episode_reward.pth` / `checkpoint_step_100000.pth` / `final_step_200000.pth`
+
+### Notes (说明)
+- 本版本主要提升评估结果图的可追溯性
+- 不涉及 reward 结构修改
+- 不涉及训练主逻辑修改
+
 ## [v0.5.12] - 训练过程日志增强
 **日期：2026-04-23**
 
