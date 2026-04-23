@@ -55,8 +55,8 @@ class AgentConfig:
     critic_lr:    float  = 3e-4     # Critic 学习率
 
     # --- 目标策略平滑（TD3 更新内部参数，已接入训练链路） ---
-    policy_noise: float  = 0.5      # 目标策略平滑噪声标准差
-    noise_clip:   float  = 0.5      # 目标策略平滑噪声截断范围
+    policy_noise: float  = 0.2      # 目标策略平滑噪声标准差（v1.0 第一阶段保守起点）
+    noise_clip:   float  = 0.2      # 目标策略平滑噪声截断范围（v1.0 第一阶段保守起点）
 
     # --- 设备 ---
     device:       str    = "cpu"    # 计算设备 (cpu/cuda)，可被 train.py CLI 覆盖
@@ -64,13 +64,14 @@ class AgentConfig:
 
 def make_default_agent_config() -> AgentConfig:
     """
-    v0.5.x 默认 Agent 配置（与之前 train.py 中硬编码的 TD3 参数行为完全一致）
+    v1.0 第一阶段默认 Agent 配置（面向第一轮正式训练的保守起点）
 
     注意：
     - state_dim / action_dim 由 train.py 运行时从 env 自动覆盖，
       此处仅作为文档和 fallback。
     - policy_noise / noise_clip：已接入 TD3 训练链路，
-      默认值 0.5 / 0.5 与原硬编码行为一致。
+      默认值 0.2 / 0.2 是 v1.0 第一阶段保守起点，后续可通过 CLI 或
+      config 覆盖。
     """
     return AgentConfig(
         state_dim=22,
@@ -83,7 +84,7 @@ def make_default_agent_config() -> AgentConfig:
         sigma=0.1,
         actor_lr=3e-4,
         critic_lr=3e-4,
-        policy_noise=0.5,
-        noise_clip=0.5,
+        policy_noise=0.2,
+        noise_clip=0.2,
         device="cpu",
     )

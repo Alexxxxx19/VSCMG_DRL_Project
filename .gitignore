@@ -13,3 +13,5 @@ models/
 *.pth
 runs/
 *.log
+eval_outputs/
+*.png

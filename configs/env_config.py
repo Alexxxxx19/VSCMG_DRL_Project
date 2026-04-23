@@ -111,8 +111,10 @@ class RandomizationConfig:
     omega_bias_enabled:     bool          = False
     omega_bias_range:       UniformRange  = field(default_factory=lambda: UniformRange(low=0.95, high=1.05))
 
-    # 初始姿态误差角（度）随机化范围（默认 [0, 5°]）
-    init_attitude_enabled:  bool          = False    # False = 保持当前随机范围 [0, 5°]
+    # 初始姿态误差角（度）随机化
+    # False = 使用 v1.0 基线固定范围 [0°, 5°]（始终随机采样）
+    # True  = 使用 init_attitude_range 指定范围（用于域随机化）
+    init_attitude_enabled:  bool          = False
     init_attitude_range:   UniformRange  = field(default_factory=lambda: UniformRange(low=0.0, high=5.0))
 
     # 初始角速度范围（rad/s）随机化
@@ -217,11 +219,12 @@ class VSCMGEnvConfig:
         self.current_omega_w = np.full(4, self.current_omega_w_nominal)
 
         # 初始姿态误差
-        self.current_init_attitude_deg = (
-            self.randomization.init_attitude_range.sample(rng)
-            if self.randomization.init_attitude_enabled
-            else self.randomization.init_attitude_range.sample(rng)  # 始终用 [0,5°]
-        )
+        if self.randomization.init_attitude_enabled:
+            # True：使用 init_attitude_range 配置的范围
+            self.current_init_attitude_deg = self.randomization.init_attitude_range.sample(rng)
+        else:
+            # False：使用 v1.0 基线固定范围 [0°, 5°]
+            self.current_init_attitude_deg = UniformRange(low=0.0, high=5.0).sample(rng)
 
         # 初始角速度
         self.current_init_omega = np.array([
@@ -288,8 +291,8 @@ class VSCMGEnvConfig:
 
 def make_default_config() -> VSCMGEnvConfig:
     """
-    v1.0 默认配置：所有随机化关闭，所有外扰关闭，所有延迟关闭，
-    与 v1.0 验收基线完全一致。
+    v1.0 默认配置：除初始姿态误差按 v1.0 基线 [0°, 5°] 随机采样外，
+    其余随机化关闭；外扰关闭，延迟关闭，与 v1.0 验收基线完全一致。
     """
     return VSCMGEnvConfig(
         nominal_j_sc=np.diag([100.0, 100.0, 100.0]),
@@ -304,7 +307,7 @@ def make_default_config() -> VSCMGEnvConfig:
             j_sc_enabled=False,
             i_w_enabled=False,
             omega_bias_enabled=False,
-            init_attitude_enabled=False,     # False = 使用默认 [0, 5°]
+            init_attitude_enabled=False,   # False = v1.0 基线 [0°, 5°]
             init_omega_enabled=False,
             init_gimbal_enabled=False,
         ),
@@ -320,7 +323,7 @@ def make_v3_robust_config() -> VSCMGEnvConfig:
     - I_w ±10% 随机化
     - 飞轮偏置 ±5% 随机化
     - 初始角速度 ±0.1 rad/s 随机化
-    - 初始姿态误差 [0, 10°] 扩大范围
+    - 初始姿态误差 [0, 10°] 扩大范围（init_attitude_enabled=True）
     - 外扰开启（白噪声，0.01 Nm）
     """
     return VSCMGEnvConfig(

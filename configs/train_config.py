@@ -49,33 +49,30 @@ class TrainConfig:
     tb_flush_secs:      int    = 30         # TensorBoard writer flush 间隔（秒）
 
     # --- 随机种子 ---
-    seed:               int    = 0          # 全局随机种子（0 或负值 = 不设置，保持随机）
+    seed:               int    = 42         # 全局随机种子（固定种子便于复现，CLI 可覆盖）
 
 
 def make_default_train_config() -> TrainConfig:
     """
-    v0.5.x 默认训练配置（与之前 train.py 的默认 CLI 参数行为完全一致）
+    v1.0 默认训练配置（面向第一阶段正式训练的保守起点）
 
     默认行为：
-        - 单环境 (num_envs=1)
-        - CPU 计算
-        - 200万步训练
-        - batch_size=256, start_steps=5000, update_every=50, update_times=50
-        - ReplayBuffer=100000
-        - 每10万步保存 checkpoint
-        - seed=0（不固定随机种子，每次运行随机不同，与原行为一致）
+        - num_envs=1（CLI 可覆盖，如 --num_envs 16）
+        - device=cpu（CLI 可覆盖，如 --device cuda）
+        - 200万步训练，batch_size=256，update_every=50，update_times=50
+        - ReplayBuffer=100000，每10万步保存 checkpoint
+        - seed=42（固定种子便于复现，CLI 可覆盖，如 --seed 123）
 
     注意：
         - update_times=50 是为了保持原始 train.py 的训练强度不变
           （每 50 步触发 50 轮更新，等于每步平均 1 次更新）
         - eval_frequency 当前未使用，预留字段
-        - seed=0 表示不设置随机种子，保持每次运行随机不同
-          如果需要可复现性，请通过 CLI 设置 --seed 42
-          （或在配置文件中直接修改 seed=42）
+        - 固定种子是为了第一阶段 reward / 配置对比时更易复现；
+          如需不同随机性，通过 CLI 设置 --seed 0 或其他值
 
     CLI 覆盖示例：
         python train.py --num_envs 16 --device cuda --batch_size 2048
-        python train.py --seed 42  # 固定随机种子，可复现
+        python train.py --seed 123  # 切换为其他固定种子
     """
     return TrainConfig(
         num_envs=1,
@@ -91,5 +88,5 @@ def make_default_train_config() -> TrainConfig:
         checkpoint_dir="models",
         log_dir_base="runs",
         tb_flush_secs=30,
-        seed=0,  # 保持原行为：不固定随机种子
+        seed=42,  # v1.0 第一阶段固定种子便于复现
     )

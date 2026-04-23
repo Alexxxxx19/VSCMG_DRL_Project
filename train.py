@@ -329,6 +329,21 @@ if __name__ == "__main__":
         # --- 异步并行环境交互 ---
         next_states, rewards, dones, truncateds, infos = envs.step(actions)
 
+        # --- 动作统计（每步记录）---
+        action_abs_mean = float(np.mean(np.abs(actions)))
+        action_sat_rate = float(np.mean(np.abs(actions) >= 0.95))
+        writer.add_scalar("Diag/action_abs_mean", action_abs_mean, global_step)
+        writer.add_scalar("Diag/action_sat_rate", action_sat_rate, global_step)
+
+        # --- reward breakdown 统计（每步从 infos 直接读取，Gymnasium 向量环境把 breakdown 放在顶层）---
+        for key in ["sigma_err_sq", "omega_sq", "wheel_bias_sq", "action_sq"]:
+            if key in infos:
+                vals = infos[key]
+                # vals 是 numpy 数组，取所有 env 的均值
+                if isinstance(vals, np.ndarray):
+                    mean_val = float(np.mean(vals))
+                    writer.add_scalar(f"Diag/{key}", mean_val, global_step)
+
         # --- 处理经验存储（统一批次遍历） ---
         for i in range(train_cfg.num_envs):
             done = dones[i] or truncateds[i]
@@ -385,6 +400,24 @@ if __name__ == "__main__":
             if len(batch_rewards) > 0:
                 mean_reward = float(np.mean(batch_rewards))
                 writer.add_scalar("Global/Mean_Reward", mean_reward, global_step)
+                writer.flush()
+
+        # --- 统一延迟重置（在读完 episode_rewards/lengths 后才能清零）---
+        for i in _reset_envs:
+            episode_rewards[i] = 0.0
+            episode_lengths[i] = 0
+        _reset_envs.clear()
+
+        # --- 更新当前状态 ---
+        states = next_states
+
+        # --- 网络更新 ---
+        if global_step >= train_cfg.start_steps and global_step % train_cfg.update_every == 0:
+            for _ in range(train_cfg.update_times):
+                actor_loss, c1_loss, c2_loss = agent.update(replay_buffer, train_cfg.batch_size)
+                writer.add_scalar("Loss/Actor", actor_loss, global_step)
+                writer.add_scalar("Loss/Critic_1", c1_loss, global_step)
+                writer.add_scalar("Loss/Critic_2", c2_loss, global_step)
                 writer.flush()
 
         # --- 统一延迟重置（在读完 episode_rewards/lengths 后才能清零）---
