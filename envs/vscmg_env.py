@@ -129,11 +129,11 @@ class RewardConfig:
 
     以后想关掉某项：直接把对应 w 改为 0 即可。
     """
-    w_att:        float = 1.0   # 姿态误差主项
-    w_omega:      float = 0.2   # 角速度抑制（v1.0 第二阶段：引入少量阻尼）
-    w_wheel_bias: float = 0.05  # 飞轮偏置保持
-    w_gimbal_act: float = 0.01  # 框架动作抑制（前 4 维）
-    w_wheel_act:  float = 0.02  # 飞轮动作抑制（后 4 维）
+    w_att:        float = 1.40   # 姿态误差主项
+    w_omega:      float = 0.32  # 角速度抑制（v1.0 第二阶段：引入少量阻尼）
+    w_wheel_bias: float = 0.08  # 飞轮偏置保持
+    w_gimbal_act: float = 0.015  # 框架动作抑制（前 4 维）
+    w_wheel_act:  float = 0.030  # 飞轮动作抑制（后 4 维）
 
 
 # =============================================================================

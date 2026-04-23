@@ -8,8 +8,11 @@
 - 生成可视化图表和CSV数据
 
 用法：
-    python eval_policy_viewer.py --model models/best_model_parallel.pth
-    python eval_policy_viewer.py --model models/checkpoint_step_400000.pth --seed 123 --max_steps 1500
+    python eval_policy_viewer.py --model models/<run_name>/best_episode_reward.pth
+    python eval_policy_viewer.py --model models/<run_name>/final_step_100000.pth --seed 123 --max_steps 1500
+
+说明：
+    --model 必填，需指向 models/<run_name>/ 下的具体 .pth 文件
 """
 
 import argparse
@@ -252,10 +255,12 @@ def run_episode_with_logging(env, actor, device, seed=42, max_steps=1000):
     return history, terminated, truncated
 
 
-def plot_spacecraft_metrics(history, output_path, use_chinese):
+def plot_spacecraft_metrics(history, output_path, use_chinese, model_name=None):
     """生成航天器状态图表（Euler角 + 角速度 + reward）"""
     steps = history['step']
     fig, axes = plt.subplots(3, 1, figsize=(12, 10))
+    if model_name:
+        fig.suptitle(f"Eval Model: {model_name}", fontsize=10, fontweight='bold')
 
     # 1. Euler 角（deg）
     axes[0].plot(steps, history['roll_deg'], label='roll', alpha=0.7)
@@ -299,10 +304,12 @@ def plot_spacecraft_metrics(history, output_path, use_chinese):
     print(f"  >> 航天器图表已保存到: {output_path}")
 
 
-def plot_actuator_metrics(history, output_path, use_chinese):
+def plot_actuator_metrics(history, output_path, use_chinese, model_name=None):
     """生成执行器状态图表（框架 + 飞轮 + 健康度）"""
     steps = history['step']
     fig, axes = plt.subplots(4, 1, figsize=(12, 12))
+    if model_name:
+        fig.suptitle(f"Eval Model: {model_name}", fontsize=10, fontweight='bold')
 
     # 1. 框架角（deg）
     for i in range(4):
@@ -497,8 +504,9 @@ if __name__ == "__main__":
 
     # 保存结果
     print(f"[4/5] 保存结果到文件夹: {output_folder}")
-    plot_spacecraft_metrics(history, spacecraft_png, use_chinese)
-    plot_actuator_metrics(history, actuator_png, use_chinese)
+    model_basename = os.path.basename(args.model)
+    plot_spacecraft_metrics(history, spacecraft_png, use_chinese, model_name=model_basename)
+    plot_actuator_metrics(history, actuator_png, use_chinese, model_name=model_basename)
     save_csv(history, csv_path)
     save_summary(history, terminated, truncated, args.model, args.seed, args.max_steps,
                  [spacecraft_png, actuator_png], csv_path, summary_path)
