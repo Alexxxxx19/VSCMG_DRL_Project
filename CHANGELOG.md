@@ -1,5 +1,74 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.11] - Reward 拆项重构与实验目录独立化
+**日期：2026-04-23**
+
+### Changed (重构)
+- `envs/vscmg_env.py`：
+  - RewardConfig 从单一 `w_act` 拆分为：
+    - `w_gimbal_act`（框架动作抑制，前 4 维）
+    - `w_wheel_act`（飞轮动作抑制，后 4 维）
+  - 默认权重更新为：
+    - `w_att = 1.0`
+    - `w_omega = 0.2`
+    - `w_wheel_bias = 0.05`
+    - `w_gimbal_act = 0.01`
+    - `w_wheel_act = 0.02`
+  - `step()` 中新增：
+    - `gimbal_action_sq = np.sum(action[:4] ** 2)`
+    - `wheel_action_sq = np.sum(action[4:] ** 2)`
+    - `action_sq = gimbal_action_sq + wheel_action_sq`（兼容总指标）
+  - `info` 中新增：
+    - `reward_gimbal_act_penalty`
+    - `reward_wheel_act_penalty`
+    - `gimbal_action_sq`
+    - `wheel_action_sq`
+
+- `train.py`：
+  - 版本号更新到 `v0.5.11`
+  - 新增 `run_name` 自动生成（格式：`v0.5.11_<timestamp>_envs<N>_seed<S>_<reward_summary>`）
+  - 新增独立实验目录：`models/<run_name>/`
+  - 模型保存命名改为：
+    - `best_episode_reward.pth`（替代 `best_model_parallel.pth`）
+    - `checkpoint_step_<N>.pth`
+    - `final_step_<N>.pth`
+  - 新增 `run_config.json` 记录实验配置（训练调度、agent 参数、reward 权重）
+  - 控制台输出补充 `run_name` 与 `model_dir`
+
+- `eval_policy_viewer.py`：
+  - 新增记录：`gimbal_action_sq`、`wheel_action_sq`
+  - 执行器图第 4 张子图新增拆项曲线
+  - `CSV / summary.txt / 控制台` 新增拆项统计
+
+- `.gitignore`：
+  - 新增 `eval_outputs/`
+  - 新增 `*.png`
+
+### Verified (验证)
+- 环境与 reward 验证通过：
+  - 零动作时 `gimbal_action_sq = 0`、`wheel_action_sq = 0`、`action_sq = 0`
+  - 非零动作 `[0.5,0.5,0.5,0.5,0.3,0.3,0.3,0.3]` 时：
+    - `gimbal_action_sq = 1.0`（预期 0.5²×4）
+    - `wheel_action_sq = 0.36`（预期 0.3²×4）
+    - `action_sq = 1.36`（预期 1.0+0.36）
+- 训练 smoke run 通过：
+  - `python train.py --num_envs 4 --batch_size 64 --update_every 50 --update_times 2 --start_steps 200 --device cpu --seed 42 --max_steps 2000`
+  - 成功生成：
+    - `models/<run_name>/final_step_2000.pth`
+    - `models/<run_name>/run_config.json`
+- eval 验证通过：
+  - 新目录下模型可被 `eval_policy_viewer.py` 正常加载
+  - `rollout.csv` 与 `summary.txt` 中包含：
+    - `gimbal_action_sq`
+    - `wheel_action_sq`
+
+### Notes (范围说明)
+- 本版本是 **reward 结构与实验管理重构版**
+- **不代表 v1.0 控制性能验收完成**
+- `best_episode_reward.pth` 基于 **单 episode reward** 触发保存
+- 若短训步数不足以完成 episode，可能不会生成 best 文件，这是预期现象
+- 训练链路验证仅确认功能正确性，未进行性能验收
+
 ## [v0.5.10] - v1.0 Reward 重构与工程文案统一
 **日期：2026-04-22**
 
