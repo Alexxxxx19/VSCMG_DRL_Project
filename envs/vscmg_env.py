@@ -112,13 +112,55 @@ def quaternion_kinematics_dynamics(q: np.ndarray, omega: np.ndarray) -> np.ndarr
 
 
 # =============================================================================
-# v1.0 Reward 系数配置
+# v1.0 Reward 归一化参考尺度配置
+# =============================================================================
+
+# v1.0 姿态误差参考：5° 精确对应 MRP 范数
+V1_ATTITUDE_REF_DEG: float = 5.0
+V1_SIGMA_REF: float = float(np.tan(np.deg2rad(V1_ATTITUDE_REF_DEG) / 4.0))
+
+
+@dataclass
+class RewardNormalizationConfig:
+    """
+    Reward 归一化参考尺度配置
+
+    设计原则：基于 v1.0 验收标准设定参考尺度。
+
+    cost=1 的物理含义：
+    - attitude_cost = 1  -> 姿态误差恰好等于 v1.0 初始上限 5°
+    - omega_cost = 1     -> 角速度恰好等于 omega_ref（按各分量 RMS 意义）
+    - wheel_bias_cost = 1 -> 飞轮归一化偏差平均等于 wheel_bias_ref
+    - action_cost = 1    -> 动作平方和恰好等于 scale（满幅）
+    """
+    # 姿态误差参考：v1.0 初始误差上限 5° 对应的 MRP 范数
+    # sigma_ref = tan(5°/4) ≈ 0.02182
+    # 当 ||sigma_err|| = sigma_ref 时 attitude_cost = 1
+    sigma_ref: float = V1_SIGMA_REF
+
+    # 角速度参考：v1.0 诊断尺度
+    # omega_ref = 0.1 rad/s，让 omega_cost 有诊断意义
+    # 后续如 omega 项太强，通过 w_omega 调整
+    omega_ref: float = 0.1
+
+    # 飞轮偏置参考：v1.0 可接受偏置范围（±10%）
+    # wheel_bias_cost = wheel_bias_sq / (wheel_bias_ref^2) / 4
+    # 当每轮平均偏置 10% 时 cost = 1
+    wheel_bias_ref: float = 0.10
+
+    # 动作项：除以 4 抵消维度差异，scale=4 表示动作满幅(±1)时 cost=1
+    gimbal_action_scale: float = 4.0
+    wheel_action_scale: float = 4.0
+
+
+# =============================================================================
+# v1.0 Reward 权重配置
 # =============================================================================
 
 @dataclass
 class RewardConfig:
     """
-    v1.0 reward 分项权重配置（拆项版本）
+    v1.0 reward 分项权重配置（归一化版本）
 
     调参原则：
       - w_att        最大：姿态误差是 v1.0 第一目标
@@ -127,13 +169,13 @@ class RewardConfig:
       - w_gimbal_act  最小：框架动作饱和抑制（前 4 维）
       - w_wheel_act  最小：飞轮动作饱和抑制（后 4 维）
 
-    以后想关掉某项：直接把对应 w 改为 0 即可。
+    注意：各 cost 项已归一化，权重直接反映相对重要性。
     """
-    w_att:        float = 1.40   # 姿态误差主项
-    w_omega:      float = 0.32  # 角速度抑制（v1.0 第二阶段：引入少量阻尼）
-    w_wheel_bias: float = 0.08  # 飞轮偏置保持
-    w_gimbal_act: float = 0.015  # 框架动作抑制（前 4 维）
-    w_wheel_act:  float = 0.030  # 飞轮动作抑制（后 4 维）
+    w_att:        float = 1.00  # 姿态误差主项（绝对主目标）
+    w_omega:      float = 0.20  # 角速度阻尼（辅助，不压过姿态）
+    w_wheel_bias: float = 0.20  # 飞轮偏置维持（辅助约束）
+    w_gimbal_act: float = 0.02  # 框架动作正则（轻微）
+    w_wheel_act:  float = 0.02  # 飞轮动作正则（轻微）
 
 
 # =============================================================================
@@ -210,7 +252,8 @@ class VSCMGEnv(gym.Env):
         # 缓存上一步框架角速度指令
         self._delta_dot_cache = np.zeros(4)
 
-        # ---- reward 系数配置（v1.0 集中调参入口）----
+        # ---- reward 归一化配置（v1.0 P1 方案）----
+        self.reward_norm_cfg = RewardNormalizationConfig()
         self.reward_cfg = RewardConfig()
 
     # =======================================================================
@@ -404,25 +447,40 @@ class VSCMGEnv(gym.Env):
         self.omega_w += wheel_accel_cmd * self.episode_cfg.dt
         self.h_w = self.I_w * self.omega_w
 
-        # ---- v1.0 reward 计算（分项叠加结构）----
+        # ---- v1.0 reward 计算（归一化版本）----
         q_err = compute_orientation_error_quaternion(self.q, self.q_target)
         sigma_err = orientation_error_quaternion_to_sigma_err(q_err)
 
+        # 原始物理量（保留用于诊断）
         sigma_err_sq = np.sum(sigma_err ** 2)
         omega_sq = np.sum(self.omega ** 2)
         omega_w_tilde = (self.omega_w - self.omega_w_nominal) / self.omega_w_nominal
         wheel_bias_sq = np.sum(omega_w_tilde ** 2)
 
-        # 拆分动作项：框架（前4维）+ 飞轮（后4维）
+        # 动作项：网络输出 action [-1, 1]
         gimbal_action_sq = np.sum(action[:4] ** 2)
         wheel_action_sq = np.sum(action[4:] ** 2)
-        action_sq = gimbal_action_sq + wheel_action_sq  # 兼容旧逻辑
+        action_sq = gimbal_action_sq + wheel_action_sq
 
-        att_penalty = self.reward_cfg.w_att * sigma_err_sq
-        omega_penalty = self.reward_cfg.w_omega * omega_sq
-        wheel_bias_penalty = self.reward_cfg.w_wheel_bias * wheel_bias_sq
-        gimbal_act_penalty = self.reward_cfg.w_gimbal_act * gimbal_action_sq
-        wheel_act_penalty = self.reward_cfg.w_wheel_act * wheel_action_sq
+        # ---- 归一化 cost ----
+        # attitude_cost: sigma_err 范数平方 / sigma_ref^2
+        # sigma_ref = tan(5°/4)，当 ||sigma_err|| = sigma_ref（即 5° 误差）时 cost = 1
+        attitude_cost = sigma_err_sq / (self.reward_norm_cfg.sigma_ref ** 2)
+        # omega_cost: omega 范数平方 / (omega_ref^2 * 3)
+        omega_cost = omega_sq / (self.reward_norm_cfg.omega_ref ** 2) / 3.0
+        # wheel_bias_cost: 飞轮归一化偏���相对于参考偏置的平方误差
+        wheel_bias_cost = wheel_bias_sq / (self.reward_norm_cfg.wheel_bias_ref ** 2) / 4.0
+        # gimbal_action_cost: 框架动作平方和相对于参考尺度的 cost
+        gimbal_action_cost = gimbal_action_sq / self.reward_norm_cfg.gimbal_action_scale
+        # wheel_action_cost: 飞轮动作平方和相对于参考尺度的 cost
+        wheel_action_cost = wheel_action_sq / self.reward_norm_cfg.wheel_action_scale
+
+        # 加权 penalty
+        att_penalty = self.reward_cfg.w_att * attitude_cost
+        omega_penalty = self.reward_cfg.w_omega * omega_cost
+        wheel_bias_penalty = self.reward_cfg.w_wheel_bias * wheel_bias_cost
+        gimbal_act_penalty = self.reward_cfg.w_gimbal_act * gimbal_action_cost
+        wheel_act_penalty = self.reward_cfg.w_wheel_act * wheel_action_cost
 
         reward = -(att_penalty + omega_penalty + wheel_bias_penalty + gimbal_act_penalty + wheel_act_penalty)
 
@@ -434,17 +492,25 @@ class VSCMGEnv(gym.Env):
         obs = self._get_obs().astype(np.float32)
         info = {
             "reward_total": float(reward),
-            "reward_att_penalty": float(att_penalty),
-            "reward_omega_penalty": float(omega_penalty),
-            "reward_wheel_bias_penalty": float(wheel_bias_penalty),
-            "reward_gimbal_act_penalty": float(gimbal_act_penalty),
-            "reward_wheel_act_penalty": float(wheel_act_penalty),
+            # 原始物理量（保留诊断）
             "sigma_err_sq": float(sigma_err_sq),
             "omega_sq": float(omega_sq),
             "wheel_bias_sq": float(wheel_bias_sq),
             "action_sq": float(action_sq),
             "gimbal_action_sq": float(gimbal_action_sq),
             "wheel_action_sq": float(wheel_action_sq),
+            # 归一化 cost（P1 方案）
+            "reward_attitude_cost": float(attitude_cost),
+            "reward_omega_cost": float(omega_cost),
+            "reward_wheel_bias_cost": float(wheel_bias_cost),
+            "reward_gimbal_action_cost": float(gimbal_action_cost),
+            "reward_wheel_action_cost": float(wheel_action_cost),
+            # 加权 penalty
+            "reward_att_penalty": float(att_penalty),
+            "reward_omega_penalty": float(omega_penalty),
+            "reward_wheel_bias_penalty": float(wheel_bias_penalty),
+            "reward_gimbal_act_penalty": float(gimbal_act_penalty),
+            "reward_wheel_act_penalty": float(wheel_act_penalty),
         }
         return obs, reward, terminated, truncated, info
 

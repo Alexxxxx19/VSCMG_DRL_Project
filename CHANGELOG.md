@@ -1,5 +1,36 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.15] - Reward 参考尺度归一化与初始权重重设
+**日期：2026-04-24**
+
+### Changed
+- 新增 v1.0 reward 参考尺度归一化：
+  - attitude_cost = sigma_err_sq / sigma_ref²
+  - sigma_ref = tan(deg2rad(5°) / 4)，使 attitude_cost = 1 对应 5° 姿态误差
+  - omega_cost = omega_sq / omega_ref² / 3，omega_ref = 0.1 rad/s
+  - wheel_bias_cost = wheel_bias_sq / wheel_bias_ref² / 4，wheel_bias_ref = 0.10
+  - gimbal_action_cost = gimbal_action_sq / 4
+  - wheel_action_cost = wheel_action_sq / 4
+- RewardConfig 初始权重重设为：
+  - w_att = 1.00
+  - w_omega = 0.20
+  - w_wheel_bias = 0.20
+  - w_gimbal_act = 0.02
+  - w_wheel_act = 0.02
+- info 中保留原始平方量、归一化 cost、加权 penalty，便于后续诊断。
+
+### Verified
+- 500 步随机 rollout 验证通过：
+  - attitude_cost、omega_cost、wheel_bias_cost、gimbal_action_cost、wheel_action_cost 均为无量纲量
+  - attitude_cost = 1 对应 v1.0 初始姿态误差上限 5°
+  - 动作 cost = 1 对应动作满幅
+  - 随机策略下姿态 penalty 为主导项，动作惩罚不再压过姿态主目标
+
+### Notes
+- 本版本完成 reward 归一化与初始权重重设，不代表 v1.0 控制性能验收完成。
+- 下一步需要进行 200k 短训练，观察姿态误差是否出现收敛趋势。
+- 若姿态不能往 0 收，再继续调整权重或检查动作到力矩链路。
+
 ## [v0.5.14] - 训练主循环重复代码清理与 P0 链路验证
 **日期：2026-04-24**
 
