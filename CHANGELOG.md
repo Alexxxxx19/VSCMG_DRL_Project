@@ -1,5 +1,26 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.16] - 版本标识自动化与训练启动配置补全
+**日期：2026-04-25**
+
+### Added
+- 新增统一版本识别工具 `utils/version.py`，训练运行时自动读取 git tag / commit / dirty 状态。
+- `run_config.json` 新增 `git_version`、`git_commit`、`git_dirty`、`reward_normalization_config` 等追溯字段。
+- 新增三个 PyCharm 共享训练启动配置：
+  - `train (Max GPU 16-Envs 100k)`
+  - `train (Max GPU 16-Envs 200k)`
+  - `train (Max GPU 16-Envs 1m)`
+
+### Changed
+- `train.py` 启动 banner 不再硬编码旧版本号。
+- `run_name` 不再硬编码旧版本号，改为基于当前 git 版本自动生成。
+- 保持 reward、TD3 算法、训练主逻辑不变。
+
+### Notes
+- 本版本只修复实验追溯与启动配置管理。
+- 不改变 v0.5.15 的 reward 归一化设计。
+- 本次 200k 训练诊断表明：v0.5.15 reward scale 过大，后续将在 v0.5.17 单独处理。
+
 ## [v0.5.15] - Reward 参考尺度归一化与初始权重重设
 **日期：2026-04-24**
 

@@ -1,6 +1,6 @@
 """
 VSCMG 姿态控制强化学习训练脚本
-TD3 算法 — ��环境异步并行训练主循环 (v0.5.12)
+TD3 算法 — ��环境异步并行训练主循环 
 
 v1.0 Reward 重构与工程稳定性验证
 ========================================
@@ -42,10 +42,11 @@ import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 
-from envs.vscmg_env import VSCMGEnv, RewardConfig
+from envs.vscmg_env import VSCMGEnv, RewardConfig, RewardNormalizationConfig
 from agents.td3_agent import TD3, ReplayBuffer
 from configs.train_config import TrainConfig, make_default_train_config
 from configs.agent_config import AgentConfig, make_default_agent_config
+from utils.version import get_run_version_label, get_git_version, get_git_commit, is_git_dirty
 import json
 
 
@@ -55,18 +56,22 @@ def generate_run_name(train_cfg: TrainConfig, agent_cfg: AgentConfig, reward_cfg
 
     包含：版本号 + 时间戳 + 并行数 + seed + reward 权重摘要
     """
-    version = "v0.5.11"
+    version = get_run_version_label()
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     reward_summary = f"att{reward_cfg.w_att}_om{reward_cfg.w_omega}_wb{reward_cfg.w_wheel_bias}_ga{reward_cfg.w_gimbal_act}_wa{reward_cfg.w_wheel_act}"
     return f"{version}_{timestamp}_envs{train_cfg.num_envs}_seed{train_cfg.seed}_{reward_summary}"
 
 
 def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
-                    agent_cfg: AgentConfig, reward_cfg: RewardConfig):
+                    agent_cfg: AgentConfig, reward_cfg: RewardConfig, reward_norm_cfg):
     """保存实验配置到 JSON"""
+    version = get_run_version_label()
     config = {
         "run_name": run_name,
-        "version": "v0.5.11",
+        "version": version,
+        "git_version": get_git_version(),
+        "git_commit": get_git_commit(),
+        "git_dirty": is_git_dirty(),
         "timestamp": datetime.datetime.now().isoformat(),
         "train_config": {
             "num_envs": train_cfg.num_envs,
@@ -99,6 +104,13 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "w_gimbal_act": reward_cfg.w_gimbal_act,
             "w_wheel_act": reward_cfg.w_wheel_act,
         },
+        "reward_normalization_config": {
+            "sigma_ref": reward_norm_cfg.sigma_ref,
+            "omega_ref": reward_norm_cfg.omega_ref,
+            "wheel_bias_ref": reward_norm_cfg.wheel_bias_ref,
+            "gimbal_action_scale": reward_norm_cfg.gimbal_action_scale,
+            "wheel_action_scale": reward_norm_cfg.wheel_action_scale,
+        },
     }
 
     config_path = os.path.join(model_dir, "run_config.json")
@@ -121,7 +133,7 @@ def parse_args():
     所有这些参数在 train_config.py 中都有对应的默认值，
     此处 CLI 值会覆盖默认值。
     """
-    parser = argparse.ArgumentParser(description="VSCMG TD3 并行训练脚本 v0.5.12")
+    parser = argparse.ArgumentParser(description="VSCMG TD3 并行训练脚本")
 
     # --- 并行与设备 ---
     parser.add_argument("--num_envs", type=int, default=None,
@@ -312,12 +324,13 @@ if __name__ == "__main__":
     # 第六步：生成 run_name 和模型目录
     # ============================================================================
     reward_cfg = RewardConfig()  # 读取当前默认 reward 配置
+    reward_norm_cfg = RewardNormalizationConfig()
     run_name = generate_run_name(train_cfg, agent_cfg, reward_cfg)
     model_dir = os.path.join(train_cfg.checkpoint_dir, run_name)
     os.makedirs(model_dir, exist_ok=True)
 
     # 保存实验配置
-    save_run_config(model_dir, run_name, train_cfg, agent_cfg, reward_cfg)
+    save_run_config(model_dir, run_name, train_cfg, agent_cfg, reward_cfg, reward_norm_cfg)
 
     # ============================================================================
     # 第七步：TensorBoard 日志
@@ -373,7 +386,7 @@ if __name__ == "__main__":
     # 训练主循环（全局步数驱动）
     # ============================================================================
     print("=" * 60)
-    print("VSCMG TD3 异步并行训练已启动 (v0.5.12)")
+    print(f"VSCMG TD3 异步并行训练已启动 ({get_run_version_label()})")
     print("=" * 60)
 
     # 初始化环境（首次 reset 时设置环境 seed）
