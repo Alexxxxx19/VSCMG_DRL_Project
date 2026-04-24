@@ -512,24 +512,6 @@ if __name__ == "__main__":
                 writer.add_scalar("Loss/Critic_2", c2_loss, global_step)
                 writer.flush()
 
-        # --- 统一延迟重置（在读完 episode_rewards/lengths 后才能清零）---
-        for i in _reset_envs:
-            episode_rewards[i] = 0.0
-            episode_lengths[i] = 0
-        _reset_envs.clear()
-
-        # --- 更新当前状态 ---
-        states = next_states
-
-        # --- 网络更新 ---
-        if global_step >= train_cfg.start_steps and global_step % train_cfg.update_every == 0:
-            for _ in range(train_cfg.update_times):
-                actor_loss, c1_loss, c2_loss = agent.update(replay_buffer, train_cfg.batch_size)
-                writer.add_scalar("Loss/Actor", actor_loss, global_step)
-                writer.add_scalar("Loss/Critic_1", c1_loss, global_step)
-                writer.add_scalar("Loss/Critic_2", c2_loss, global_step)
-                writer.flush()
-
     # ============================================================================
     # 训练结束
     # ============================================================================

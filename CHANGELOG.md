@@ -1,5 +1,22 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.14] - 训练主循环重复代码清理与 P0 链路验证
+**日期：2026-04-24**
+
+### Fixed
+- 删除 `train.py` 中重复执行的训练/动作记录代码块，避免同一轮逻辑重复执行。
+- 保持 reward 权重、agent 超参数、训练调度参数不变。
+
+### Verified
+- 确认 ReplayBuffer push 使用 `state`、`action`、`reward`、`real_next_state`、`done`，state 与 next_state 不再混用。
+- 确认 P0 训练链路验证通过：训练主循环正常、ReplayBuffer 正确、环境交互正常。
+- 确认当前主要问题不是训练链路 bug，而是 reward 分项量纲需要重新设计。
+
+### Notes
+- 本版本不调整 reward。
+- 本版本不代表 v1.0 控制性能验收完成。
+- 下一步进入 reward 权重量纲调整实验。
+
 ## [v0.5.13] - 评估图模型名显示增强
 **日期：2026-04-24**
 
