@@ -160,22 +160,18 @@ class RewardNormalizationConfig:
 @dataclass
 class RewardConfig:
     """
-    v1.0 reward 分项权重配置（归一化版本）
+    v0.5.17 Stage A: 姿态单项 reward + reward scale 修复
 
-    调参原则：
-      - w_att        最大：姿态误差是 v1.0 第一目标
-      - w_omega      次之：阻尼辅助，不能压过姿态主任务
-      - w_wheel_bias 再次：飞轮偏置维持，辅助目标
-      - w_gimbal_act  最小：框架动作饱和抑制（前 4 维）
-      - w_wheel_act  最小：飞轮动作饱和抑制（后 4 维）
-
-    注意：各 cost 项已归一化，权重直接反映相对重要性。
+    Stage A 目标：验证网络能否学到"动作 → 姿态误差下降"的基础映射。
+    - 只开姿态项，其他项权重为 0
+    - 通过 reward_scale 控制 episode return 量级
     """
-    w_att:        float = 1.00  # 姿态误差主项（绝对主目标）
-    w_omega:      float = 0.20  # 角速度阻尼（辅助，不压过姿态）
-    w_wheel_bias: float = 0.20  # 飞轮偏置维持（辅助约束）
-    w_gimbal_act: float = 0.02  # 框架动作正则（轻微）
-    w_wheel_act:  float = 0.02  # 飞轮动作正则（轻微）
+    w_att:        float = 1.00  # 姿态误差主项（Stage A 唯一开启项）
+    w_omega:      float = 0.00  # 角速度阻尼（Stage A 关闭）
+    w_wheel_bias: float = 0.00  # 飞轮偏置（Stage A 关闭）
+    w_gimbal_act: float = 0.00  # 框架动作正则（Stage A 关闭）
+    w_wheel_act:  float = 0.00  # 飞轮动作正则（Stage A 关闭）
+    reward_scale: float = 300.0  # reward 全局缩放因子，控制 return 量级
 
 
 # =============================================================================
@@ -482,7 +478,15 @@ class VSCMGEnv(gym.Env):
         gimbal_act_penalty = self.reward_cfg.w_gimbal_act * gimbal_action_cost
         wheel_act_penalty = self.reward_cfg.w_wheel_act * wheel_action_cost
 
-        reward = -(att_penalty + omega_penalty + wheel_bias_penalty + gimbal_act_penalty + wheel_act_penalty)
+        # ---- Stage A: reward scale 修复 ----
+        raw_penalty = (
+            att_penalty
+            + omega_penalty
+            + wheel_bias_penalty
+            + gimbal_act_penalty
+            + wheel_act_penalty
+        )
+        reward = -raw_penalty / self.reward_cfg.reward_scale
 
         self.current_step += 1
 
@@ -492,6 +496,10 @@ class VSCMGEnv(gym.Env):
         obs = self._get_obs().astype(np.float32)
         info = {
             "reward_total": float(reward),
+            # Stage A 新增诊断
+            "reward_raw_penalty": float(raw_penalty),
+            "reward_scale": float(self.reward_cfg.reward_scale),
+            "reward_scaled_total": float(reward),
             # 原始物理量（保留诊断）
             "sigma_err_sq": float(sigma_err_sq),
             "omega_sq": float(omega_sq),

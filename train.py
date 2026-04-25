@@ -103,6 +103,7 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "w_wheel_bias": reward_cfg.w_wheel_bias,
             "w_gimbal_act": reward_cfg.w_gimbal_act,
             "w_wheel_act": reward_cfg.w_wheel_act,
+            "reward_scale": reward_cfg.reward_scale,
         },
         "reward_normalization_config": {
             "sigma_ref": reward_norm_cfg.sigma_ref,

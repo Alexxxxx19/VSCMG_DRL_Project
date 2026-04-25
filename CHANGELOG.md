@@ -1,5 +1,39 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.17] - Stage A 姿态单项 Reward 与 Reward Scale 稳定化
+**日期：2026-04-25**
+
+### Changed
+- RewardConfig 切换为 Stage A 姿态单项训练配置：
+  - w_att = 1.00
+  - w_omega = 0.00
+  - w_wheel_bias = 0.00
+  - w_gimbal_act = 0.00
+  - w_wheel_act = 0.00
+- 新增 reward_scale，最终设为 300.0：
+  - reward = -raw_penalty / reward_scale
+- info 中新增：
+  - reward_raw_penalty
+  - reward_scale
+  - reward_scaled_total
+- run_config.json 新增 reward_scale 记录。
+
+### Verified
+- 对 reward_scale = 1000 / 300 / 100 进行 20k smoke test 对比。
+- 选择 reward_scale = 300.0：
+  - Critic loss 稳定；
+  - Actor loss 未异常爆炸；
+  - action_sat_rate 约 0.34；
+  - sigma_err_sq 在 20k smoke 中优于 1000 与 100；
+  - 无 NaN / Inf / traceback。
+
+### Notes
+- 本版本是 Stage A 实验版本，只验证姿态误差控制基础映射。
+- 本版本不追求完整 v1.0 reward。
+- omega、wheel_bias、action penalty 暂时关闭。
+- 允许姿态在目标附近震荡，后续阶段再加入 omega 阻尼和动作正则。
+- 不代表 v1.0 控制性能验收完成。
+
 ## [v0.5.16] - 版本标识自动化与训练启动配置补全
 **日期：2026-04-25**
 
