@@ -47,6 +47,7 @@ from agents.td3_agent import TD3, ReplayBuffer
 from configs.train_config import TrainConfig, make_default_train_config
 from configs.agent_config import AgentConfig, make_default_agent_config
 from utils.version import get_run_version_label, get_git_version, get_git_commit, is_git_dirty
+from configs.env_config import VSCMGEnvConfig, make_default_config as _make_default_env_config
 import json
 
 
@@ -54,24 +55,41 @@ def generate_run_name(train_cfg: TrainConfig, agent_cfg: AgentConfig, reward_cfg
     """
     生成唯一实验标识符
 
-    包含：版本号 + 时间戳 + 并行数 + seed + reward 权重摘要
+    包含：版本号 + 时间戳 + 并行数 + seed + gimbal_rate + gamma + reward 权重摘要
     """
     version = get_run_version_label()
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    _env_cfg = _env_config_override if _env_config_override is not None else VSCMGEnvConfig()
+    gr_str = f"gr{_env_cfg.max_gimbal_rate}"
+    gamma_str = f"g{agent_cfg.gamma}"
+    action_mode_str = "gimbal_only" if _env_cfg.action_mode == "gimbal_only" else "full8d"
     reward_summary = f"att{reward_cfg.w_att}_om{reward_cfg.w_omega}_wb{reward_cfg.w_wheel_bias}_ga{reward_cfg.w_gimbal_act}_wa{reward_cfg.w_wheel_act}"
-    return f"{version}_{timestamp}_envs{train_cfg.num_envs}_seed{train_cfg.seed}_{reward_summary}"
+    return f"{version}_{timestamp}_envs{train_cfg.num_envs}_seed{train_cfg.seed}_{gr_str}_{gamma_str}_{action_mode_str}_{reward_summary}"
 
 
 def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
-                    agent_cfg: AgentConfig, reward_cfg: RewardConfig, reward_norm_cfg):
+                    agent_cfg: AgentConfig, reward_cfg: RewardConfig,
+                    reward_norm_cfg, actor_init_path: str | None = None):
     """保存实验配置到 JSON"""
     version = get_run_version_label()
+    # 使用实际 env config（已被 CLI 覆盖）
+    _env_cfg = _env_config_override if _env_config_override is not None else VSCMGEnvConfig()
+
     config = {
         "run_name": run_name,
         "version": version,
         "git_version": get_git_version(),
         "git_commit": get_git_commit(),
         "git_dirty": is_git_dirty(),
+        "initial_delta_deg": _env_cfg.initial_delta_deg.tolist(),
+        "max_gimbal_rate": _env_cfg.max_gimbal_rate,
+        "max_wheel_accel": _env_cfg.max_wheel_accel,
+        "action_mode": _env_cfg.action_mode,
+        "actor_init_path": actor_init_path,
+        "init_attitude_range_deg": [
+            _env_cfg.randomization.init_attitude_range.low,
+            _env_cfg.randomization.init_attitude_range.high,
+        ],
         "timestamp": datetime.datetime.now().isoformat(),
         "train_config": {
             "num_envs": train_cfg.num_envs,
@@ -82,6 +100,7 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "update_times": train_cfg.update_times,
             "batch_size": train_cfg.batch_size,
             "replay_capacity": train_cfg.replay_capacity,
+            "checkpoint_frequency": train_cfg.checkpoint_frequency,
             "seed": train_cfg.seed,
         },
         "agent_config": {
@@ -124,7 +143,50 @@ def make_env():
     顶层环境工厂函数（可序列化）
     用于 AsyncVectorEnv 实例化
     """
-    return VSCMGEnv()
+    return VSCMGEnv(config=_env_config_override)
+
+
+# 模块级环境配置覆盖（由 main 中 CLI 参数设置）
+_env_config_override = None
+
+
+def load_actor_weights(agent, actor_init_path, expected_action_dim, device):
+    """
+    从 checkpoint 严格加载 actor 权重到 TD3 agent。
+
+    支持格式：
+    - {'actor': state_dict}
+    - {'actor_state_dict': state_dict}
+
+    要求：
+    - fc3.weight.shape[0] 必须等于 expected_action_dim
+    - action_dim 不匹配直接 raise RuntimeError
+    - 不允许跳过输出层，不允许 partial load
+    - strict=True 加载到 actor 和 actor_target
+    """
+    checkpoint = torch.load(actor_init_path, map_location=device)
+
+    if 'actor' in checkpoint:
+        actor_sd = checkpoint['actor']
+    elif 'actor_state_dict' in checkpoint:
+        actor_sd = checkpoint['actor_state_dict']
+    else:
+        raise ValueError(
+            f"[load_actor_weights] 无法识别的 checkpoint 格式，可用键: {list(checkpoint.keys())}. "
+            f"需要 'actor' 或 'actor_state_dict'。"
+        )
+
+    # 严格检查输出层维度
+    if 'fc3.weight' in actor_sd and actor_sd['fc3.weight'].shape[0] != expected_action_dim:
+        raise RuntimeError(
+            f"[load_actor_weights] Shape mismatch: checkpoint fc3.weight 输出 dim = {actor_sd['fc3.weight'].shape[0]}, "
+            f"expected action_dim = {expected_action_dim}. "
+            f"DO NOT silently skip output layer. Use a compatible checkpoint."
+        )
+
+    # 加载到 actor 和 actor_target（strict=True）
+    agent.actor.load_state_dict(actor_sd, strict=True)
+    agent.target_actor.load_state_dict(actor_sd, strict=True)
 
 
 def parse_args():
@@ -157,10 +219,51 @@ def parse_args():
     # --- Batch 与 Replay ---
     parser.add_argument("--batch_size", type=int, default=None,
                         help="批次大小（覆盖 train_config 默认值）")
+    parser.add_argument("--replay_capacity", type=int, default=None,
+                        help="经验回放池容量（覆盖 train_config 默认值）")
+    parser.add_argument("--checkpoint_frequency", type=int, default=None,
+                        help="每N步保存一次 checkpoint（覆盖 train_config 默认值）")
 
     # --- 随机种子 ---
     parser.add_argument("--seed", type=int, default=None,
                         help="随机种子（覆盖 train_config 默认值）；0 或负值表示不固定随机种子")
+
+    # --- TD3 噪声参数 ---
+    parser.add_argument("--exploration_noise", type=float, default=None,
+                        help="在线探索噪声 sigma（覆盖 agent_config 默认值）")
+    parser.add_argument("--policy_noise", type=float, default=None,
+                        help="目标策略平滑噪声标准差（覆盖 agent_config 默认值）")
+    parser.add_argument("--noise_clip", type=float, default=None,
+                        help="目标策略平滑噪声截断范围（覆盖 agent_config 默认值）")
+
+    # --- 环境物理参数 ---
+    parser.add_argument("--max_gimbal_rate", type=float, default=None,
+                        help="框架角速度物理上限 rad/s（覆盖 env_config 默认值）")
+    parser.add_argument("--init_attitude_min_deg", type=float, default=None,
+                        help="初始等效旋转角下限（度）（覆盖 env_config，默认 0.0）")
+    parser.add_argument("--init_attitude_max_deg", type=float, default=None,
+                        help="初始等效旋转角上限（度）（覆盖 env_config，默认 5.0）")
+    parser.add_argument("--action_mode", type=str, default=None,
+                        choices=["full_8d", "gimbal_only"],
+                        help="动作空间模式：full_8d=8维 gimbal+wheel（默认），gimbal_only=4维 仅 gimbal")
+
+    # --- Agent 核心参数 ---
+    parser.add_argument("--gamma", type=float, default=None,
+                        help="TD3 折扣因子（覆盖 agent_config 默认值）")
+    parser.add_argument("--actor_lr", type=float, default=None,
+                        help="Actor 学习率（覆盖 agent_config 默认值）")
+    parser.add_argument("--critic_lr", type=float, default=None,
+                        help="Critic 学习率（覆盖 agent_config 默认值）")
+
+    # --- Reward 权重参数 ---
+    parser.add_argument("--w_gimbal_act", type=float, default=None,
+                        help="gimbal action penalty 权重（覆盖 reward_config 默认值）")
+    parser.add_argument("--w_wheel_act", type=float, default=None,
+                        help="wheel action penalty 权重（覆盖 reward_config 默认值）")
+
+    # --- Actor 初始化路径（BC-init TD3） ---
+    parser.add_argument("--actor_init_path", type=str, default=None,
+                        help="从指定路径加载 actor 权重初始化 TD3 actor（BC-init 用途）")
 
     return parser.parse_args()
 
@@ -184,8 +287,32 @@ def _apply_cli_overrides(cfg: TrainConfig, args) -> TrainConfig:
         cfg.update_times = args.update_times
     if args.batch_size is not None:
         cfg.batch_size = args.batch_size
+    if args.replay_capacity is not None:
+        cfg.replay_capacity = args.replay_capacity
+    if args.checkpoint_frequency is not None:
+        cfg.checkpoint_frequency = args.checkpoint_frequency
     if args.seed is not None:
         cfg.seed = args.seed
+    return cfg
+
+
+def _apply_cli_agent_overrides(cfg: AgentConfig, args) -> AgentConfig:
+    """
+    将 CLI 噪声参数覆盖到 AgentConfig 实例上。
+    仅当 args.XXX is not None 时覆盖。
+    """
+    if args.exploration_noise is not None:
+        cfg.sigma = args.exploration_noise
+    if args.policy_noise is not None:
+        cfg.policy_noise = args.policy_noise
+    if args.noise_clip is not None:
+        cfg.noise_clip = args.noise_clip
+    if args.gamma is not None:
+        cfg.gamma = args.gamma
+    if args.actor_lr is not None:
+        cfg.actor_lr = args.actor_lr
+    if args.critic_lr is not None:
+        cfg.critic_lr = args.critic_lr
     return cfg
 
 
@@ -222,6 +349,7 @@ def print_config_snapshot(train_cfg: TrainConfig, agent_cfg: AgentConfig,
     print(f"    update_times    = {train_cfg.update_times}")
     print(f"    batch_size      = {train_cfg.batch_size}")
     print(f"    replay_capacity = {train_cfg.replay_capacity:,}")
+    print(f"    checkpoint_freq = {train_cfg.checkpoint_frequency:,}")
     print(f"    seed            = {train_cfg.seed}")
     print("-" * 40)
     print("  [Agent / TD3]")
@@ -236,6 +364,13 @@ def print_config_snapshot(train_cfg: TrainConfig, agent_cfg: AgentConfig,
     print(f"    sigma           = {agent_cfg.sigma}")
     print(f"    policy_noise    = {agent_cfg.policy_noise}")
     print(f"    noise_clip      = {agent_cfg.noise_clip}")
+    print("-" * 40)
+    print("  [Env / Physics]")
+    _ecfg = _env_config_override if _env_config_override is not None else VSCMGEnvConfig()
+    print(f"    max_gimbal_rate = {_ecfg.max_gimbal_rate} rad/s")
+    print(f"    max_wheel_accel = {_ecfg.max_wheel_accel} rad/s^2")
+    print(f"    initial_delta_deg = {_ecfg.initial_delta_deg.tolist()}")
+    print(f"    init_attitude_range_deg = [{_ecfg.randomization.init_attitude_range.low}, {_ecfg.randomization.init_attitude_range.high}]")
     print("=" * 60)
 
 
@@ -251,11 +386,29 @@ if __name__ == "__main__":
 
     # CLI 覆盖（CLI 存在时优先于 config 默认值）
     train_cfg = _apply_cli_overrides(train_cfg, args)
+    agent_cfg = _apply_cli_agent_overrides(agent_cfg, args)
     # 设备同步到 agent_cfg
     agent_cfg.device = train_cfg.device
 
     # 设置全局随机种子（numpy + torch + random + cuda）
     set_global_seed(train_cfg.seed)
+
+    # ============================================================================
+    # 第一步 b：环境配置（CLI 覆盖 max_gimbal_rate 等）
+    # ============================================================================
+    import sys
+    _this = sys.modules[__name__]
+    _this._env_config_override = _make_default_env_config()
+    if args.max_gimbal_rate is not None:
+        _this._env_config_override.max_gimbal_rate = args.max_gimbal_rate
+    if args.action_mode is not None:
+        _this._env_config_override.action_mode = args.action_mode
+    if args.init_attitude_min_deg is not None or args.init_attitude_max_deg is not None:
+        min_deg = args.init_attitude_min_deg if args.init_attitude_min_deg is not None else 0.0
+        max_deg = args.init_attitude_max_deg if args.init_attitude_max_deg is not None else 5.0
+        _this._env_config_override.randomization.init_attitude_enabled = True
+        from configs.env_config import UniformRange
+        _this._env_config_override.randomization.init_attitude_range = UniformRange(low=min_deg, high=max_deg)
 
     # ============================================================================
     # 第二步：环境创建（state_dim / action_dim 运行时自动覆盖）
@@ -317,6 +470,18 @@ if __name__ == "__main__":
     print(f"[Tracer] TD3 神经网络已建立并载入 {'GPU' if device_torch.type == 'cuda' else 'CPU'}！")
 
     # ============================================================================
+    # 第四步 b：BC-init TD3 — 从 checkpoint 加载 actor 权重
+    # ============================================================================
+    if args.actor_init_path is not None:
+        load_actor_weights(
+            agent=agent,
+            actor_init_path=args.actor_init_path,
+            expected_action_dim=agent_cfg.action_dim,
+            device=agent_cfg.device,
+        )
+        print(f"[ActorInit] actor initialized from: {args.actor_init_path}")
+
+    # ============================================================================
     # 第五步：打印配置快照
     # ============================================================================
     print_config_snapshot(train_cfg, agent_cfg, state_dim, action_dim)
@@ -325,13 +490,22 @@ if __name__ == "__main__":
     # 第六步：生成 run_name 和模型目录
     # ============================================================================
     reward_cfg = RewardConfig()  # 读取当前默认 reward 配置
+    # CLI 覆盖 reward 权重
+    if args.w_gimbal_act is not None:
+        reward_cfg.w_gimbal_act = args.w_gimbal_act
+    if args.w_wheel_act is not None:
+        reward_cfg.w_wheel_act = args.w_wheel_act
     reward_norm_cfg = RewardNormalizationConfig()
     run_name = generate_run_name(train_cfg, agent_cfg, reward_cfg)
     model_dir = os.path.join(train_cfg.checkpoint_dir, run_name)
     os.makedirs(model_dir, exist_ok=True)
 
     # 保存实验配置
-    save_run_config(model_dir, run_name, train_cfg, agent_cfg, reward_cfg, reward_norm_cfg)
+    save_run_config(
+        model_dir, run_name, train_cfg, agent_cfg,
+        reward_cfg, reward_norm_cfg,
+        actor_init_path=args.actor_init_path
+    )
 
     # ============================================================================
     # 第七步：TensorBoard 日志
@@ -349,6 +523,8 @@ if __name__ == "__main__":
     # ============================================================================
     best_reward = -1e6
     best_step = None
+    _latest_det_sat_rate = 0.0
+    _latest_det_action_std = 1.0
     train_start_time = _time_module.time()
     episode_rewards = np.zeros(train_cfg.num_envs, dtype=np.float32)
     episode_lengths = np.zeros(train_cfg.num_envs, dtype=np.int32)
@@ -369,7 +545,7 @@ if __name__ == "__main__":
 
     def _log_and_checkpoint(ep_reward: float, ep_step: int):
         """全局最佳模型保存（基于单 episode 得分触发，不写 TensorBoard）"""
-        global best_reward, best_step, first_episode_done
+        global best_reward, best_step, first_episode_done, _latest_det_sat_rate, _latest_det_action_std
         first_episode_done = True
         saved = "none"
         path = None
@@ -381,6 +557,11 @@ if __name__ == "__main__":
             print(f"  >> [Checkpoint] New best reward: {best_reward:.4f} -> {best_path}")
             saved = "best"
             path = best_path
+            # Policy 健康度警告
+            if _latest_det_sat_rate > 0.5:
+                print(f"  >> [PolicyHealth WARNING] sat_rate={_latest_det_sat_rate:.3f} > 0.5 — actor may be over-saturated!")
+            if _latest_det_action_std < 0.05:
+                print(f"  >> [PolicyHealth WARNING] action_std={_latest_det_action_std:.4f} < 0.05 — actor may be collapsed!")
         _episode_summary(ep_reward, ep_step, saved, path)
 
     # ============================================================================
@@ -421,16 +602,40 @@ if __name__ == "__main__":
         if global_step < train_cfg.start_steps:
             # 纯随机探索阶段
             actions = envs.action_space.sample()
+            det_actions = actions  # 随机阶段也记录 deterministic action
         else:
             # 批量策略推理
             states_tensor = torch.FloatTensor(states).to(device_torch)
             with torch.no_grad():
-                actions = agent.actor(states_tensor).cpu().numpy()
+                det_actions = agent.actor(states_tensor).cpu().numpy()
 
             # 添加探索噪声
             noise = agent.sigma * np.random.randn(train_cfg.num_envs, agent.action_dim)
-            actions = actions + noise
+            actions = det_actions + noise
             actions = np.clip(actions, -agent.action_bound, agent.action_bound)
+
+        # --- Deterministic actor 诊断（不影响训练） ---
+        with torch.no_grad():
+            det_action_abs_mean = float(np.mean(np.abs(det_actions)))
+            det_action_sat_rate = float(np.mean(np.abs(det_actions) >= 0.95))
+            det_action_sq = float(np.mean(np.sum(det_actions ** 2, axis=1)))
+            det_action_std = float(np.std(det_actions))
+            det_action_min = float(np.min(det_actions))
+            det_action_max = float(np.max(det_actions))
+        writer.add_scalar("ActorDet/action_abs_mean", det_action_abs_mean, global_step)
+        writer.add_scalar("ActorDet/action_sat_rate", det_action_sat_rate, global_step)
+        writer.add_scalar("ActorDet/action_sq", det_action_sq, global_step)
+        writer.add_scalar("ActorDet/action_std", det_action_std, global_step)
+        writer.add_scalar("ActorDet/action_min", det_action_min, global_step)
+        writer.add_scalar("ActorDet/action_max", det_action_max, global_step)
+
+        # --- Policy 健康度检测 ---
+        is_saturated = 1.0 if det_action_sat_rate > 0.5 else 0.0
+        is_collapsed = 1.0 if det_action_std < 0.05 else 0.0
+        _latest_det_sat_rate = det_action_sat_rate
+        _latest_det_action_std = det_action_std
+        writer.add_scalar("PolicyHealth/is_actor_saturated", is_saturated, global_step)
+        writer.add_scalar("PolicyHealth/is_actor_collapsed", is_collapsed, global_step)
 
         # --- 异步并行环境交互 ---
         next_states, rewards, dones, truncateds, infos = envs.step(actions)
@@ -449,6 +654,33 @@ if __name__ == "__main__":
                 if isinstance(vals, np.ndarray):
                     mean_val = float(np.mean(vals))
                     writer.add_scalar(f"Diag/{key}", mean_val, global_step)
+
+        # --- reward 分项 tag（批量写入）---
+        # RewardCost 组
+        cost_keys = {
+            "reward_attitude_cost": "RewardCost/attitude",
+            "reward_omega_cost": "RewardCost/omega",
+            "reward_wheel_bias_cost": "RewardCost/wheel_bias",
+            "reward_gimbal_action_cost": "RewardCost/gimbal_action",
+            "reward_wheel_action_cost": "RewardCost/wheel_action",
+        }
+        penalty_keys = {
+            "reward_att_penalty": "RewardPenalty/attitude",
+            "reward_omega_penalty": "RewardPenalty/omega",
+            "reward_wheel_bias_penalty": "RewardPenalty/wheel_bias",
+            "reward_gimbal_act_penalty": "RewardPenalty/gimbal_action",
+            "reward_wheel_act_penalty": "RewardPenalty/wheel_action",
+            "reward_raw_penalty": "RewardPenalty/raw_penalty",
+        }
+        reward_keys = {
+            "reward_total": "Reward/reward_total",
+        }
+
+        for info_key, tag in {**cost_keys, **penalty_keys, **reward_keys}.items():
+            if info_key in infos:
+                vals = infos[info_key]
+                if isinstance(vals, np.ndarray):
+                    writer.add_scalar(tag, float(np.mean(vals)), global_step)
 
         # --- 处理经验存储（统一批次遍历） ---
         for i in range(train_cfg.num_envs):
@@ -521,7 +753,11 @@ if __name__ == "__main__":
         if global_step >= train_cfg.start_steps and global_step % train_cfg.update_every == 0:
             for _ in range(train_cfg.update_times):
                 actor_loss, c1_loss, c2_loss = agent.update(replay_buffer, train_cfg.batch_size)
-                writer.add_scalar("Loss/Actor", actor_loss, global_step)
+                if actor_loss is not None:
+                    writer.add_scalar("Loss/Actor", actor_loss, global_step)
+                    writer.add_scalar("PolicyHealth/actor_update_flag", 1, global_step)
+                else:
+                    writer.add_scalar("PolicyHealth/actor_update_flag", 0, global_step)
                 writer.add_scalar("Loss/Critic_1", c1_loss, global_step)
                 writer.add_scalar("Loss/Critic_2", c2_loss, global_step)
                 writer.flush()
