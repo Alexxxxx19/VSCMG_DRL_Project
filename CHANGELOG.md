@@ -1,5 +1,61 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.18-debug-bc-reg] - 2026-04-27
+
+### 调试检查点说明
+
+- 这是个人研究用途的 debug tag，不是正式稳定发布版。
+- 用于保存 BC regularization infrastructure 的实现与验证断点。
+- 当前仍处于 debug 阶段，不是 v1.0 验收阶段。
+
+### 主要修改
+
+- 新增 protected TD3 BC regularization 基础设施。
+- `AgentConfig` 和 train CLI 新增 `bc_reg_weight` 和 `bc_reg_steps` 参数。
+- `TD3` 新增 `set_bc_reference_from_current_actor()` 方法，从当前 actor 创建 frozen BC reference。
+- TD3 actor loss 拆分为：
+  - `actor_q_loss`：标准 TD3 Q 最大化 loss；
+  - `bc_reg_loss = bc_reg_weight * bc_mse_loss`：BC 行为克隆约束；
+  - `actor_loss_total = actor_q_loss + bc_reg_loss`。
+- TensorBoard 新增：
+  - `Loss/Actor_Q`
+  - `Loss/Actor_BC_Reg`
+  - `Loss/Actor_BC_MSE`
+  - `Loss/Actor_Total`
+  - `PolicyHealth/bc_reg_active`
+- `bc_reg_steps` 统计 actor update 次数（非 TD3 update 次数）。
+- `bc_reg_weight > 0` 但未指定 `--actor_init_path` 时 raise ValueError。
+- 默认 `bc_reg_weight=0.0` 保持原 TD3 行为不变。
+- `full_8d` 默认训练不受影响。
+
+### 同一节点包含的前置 commit
+
+- `e9585bf` — fix: dynamic action_dim support in eval_policy_viewer for gimbal_only (4D) mode
+- `565bdee` — debug: add BC regularization for protected TD3
+
+### 已验证结论
+
+- smoke test 通过：
+  - `bc_reg_weight=0` 保持原 TD3 行为；
+  - `bc_reg_weight>0` 激活 BC regularization，`bc_reg_loss > 0`；
+  - `bc_reg_steps` 正确计数 actor update 帧并在耗尽后关闭 BC reg；
+  - `actor_freeze_steps` 和 BC regularization 正确交互；
+  - `actor_update_count` 只在 actor 实际更新后递增。
+- 10k/20k smoke train 确认：
+  - `actor_freeze_steps` 生效；
+  - `actor_lr=1e-5` 只能延缓崩坏，20k 后 actor 仍退化；
+  - 过程质量对比确认 TD3 20k final actor 不是有意义的 null-motion，而是高动作退化；
+  - BC regularization 是保护 BC actor 的必要机制。
+
+### 未修改内容
+
+- 没有修改 reward 函数。
+- 没有修改 PyramidVSCMG 几何公式。
+- 没有修改物理参数。
+- 没有提交模型文件。
+- 没有提交 `.pth` / `.npz` 文件。
+- 没有创建 GitHub Release。
+
 ## [v0.5.18-debug-roadmap] - 2026-04-27
 
 ### 文档路线检查点说明
