@@ -1,5 +1,53 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.18-debug-bc-init] - 2026-04-27
+
+### 调试检查点说明
+
+- 这是个人研究用途的 debug tag，不是正式稳定发布版。
+- 用于保存 BC-init TD3 调试阶段的关键断点。
+- 方便后续在实现 actor freeze、critic warmup、replay prefill、BC regularization 前回退和复现。
+
+### 主要修改
+
+- 增加并验证 `--actor_init_path` 链路。
+- 在 `run_config.json` 中记录 `actor_init_path`。
+- 将 BC actor 严格加载到 `agent.actor` 和 `agent.target_actor`。
+- 增加 checkpoint 动作维度兼容性检查。
+- 修正目标 actor 属性名为 `target_actor`。
+- 将调试评估脚本整理到 `scripts/debug/`。
+
+### 已验证结论
+
+- BC actor 在一致 reset 评估下有效。
+- `--actor_init_path` 加载链路有效。
+- 普通 TD3 fine-tune 会快速破坏 BC policy。
+- 10k checkpoint 已严重退化。
+- TD3 checkpoint 高饱和、大动作、姿态误差恶化。
+- `best_episode_reward.pth` 不是可靠选模标准。
+- 后续评估应优先使用 `env.reset(options={"init_attitude_deg": angle})`，避免手动改 env 内部状态造成分布偏移。
+
+### 文档路线调整
+
+- 更新 v1.0~v4.0 设计规约和 Master Roadmap。
+- 当前仍处于 debug 阶段，不是 v1.0 验收阶段。
+- 下一阶段主路线调整为 protected TD3 / BC-assisted TD3：
+  - actor freeze / actor update gate
+  - critic warmup
+  - replay buffer prefill
+  - low actor_lr
+  - BC regularization
+  - rollout-based 选模指标
+
+### 未修改内容
+
+- 没有修改 reward 函数。
+- 没有修改 PyramidVSCMG 几何公式。
+- 没有修改物理参数。
+- 没有提交模型文件。
+- 没有提交 `.pth` / `.npz` 文件。
+- 没有创建 GitHub Release。
+
 ## [v0.5.17] - Stage A 姿态单项 Reward 与 Reward Scale 稳定化
 **日期：2026-04-25**
 
