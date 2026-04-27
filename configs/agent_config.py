@@ -58,6 +58,9 @@ class AgentConfig:
     policy_noise: float  = 0.2      # 目标策略平滑噪声标准差（v1.0 第一阶段保守起点）
     noise_clip:   float  = 0.2      # 目标策略平滑噪声截断范围（v1.0 第一阶段保守起点）
 
+    # --- Protected TD3：Actor 冻结步数 ---
+    actor_freeze_steps: int = 0     # 前 N 次 update 只更新 critic，不更新 actor（0=关闭）
+
     # --- 设备 ---
     device:       str    = "cpu"    # 计算设备 (cpu/cuda)，可被 train.py CLI 覆盖
 
@@ -87,4 +90,5 @@ def make_default_agent_config() -> AgentConfig:
         policy_noise=0.2,
         noise_clip=0.2,
         device="cpu",
+        actor_freeze_steps=0,
     )

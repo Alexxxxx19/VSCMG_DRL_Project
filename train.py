@@ -115,6 +115,7 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "critic_lr": agent_cfg.critic_lr,
             "policy_noise": agent_cfg.policy_noise,
             "noise_clip": agent_cfg.noise_clip,
+            "actor_freeze_steps": agent_cfg.actor_freeze_steps,
         },
         "reward_config": {
             "w_att": reward_cfg.w_att,
@@ -254,6 +255,8 @@ def parse_args():
                         help="Actor 学习率（覆盖 agent_config 默认值）")
     parser.add_argument("--critic_lr", type=float, default=None,
                         help="Critic 学习率（覆盖 agent_config 默认值）")
+    parser.add_argument("--actor_freeze_steps", type=int, default=None,
+                        help="前 N 次 update 只更新 critic，不更新 actor（覆盖 agent_config 默认值）")
 
     # --- Reward 权重参数 ---
     parser.add_argument("--w_gimbal_act", type=float, default=None,
@@ -313,6 +316,8 @@ def _apply_cli_agent_overrides(cfg: AgentConfig, args) -> AgentConfig:
         cfg.actor_lr = args.actor_lr
     if args.critic_lr is not None:
         cfg.critic_lr = args.critic_lr
+    if args.actor_freeze_steps is not None:
+        cfg.actor_freeze_steps = args.actor_freeze_steps
     return cfg
 
 
@@ -465,6 +470,7 @@ if __name__ == "__main__":
         policy_noise=agent_cfg.policy_noise,
         noise_clip=agent_cfg.noise_clip,
         device=agent_cfg.device,
+        actor_freeze_steps=agent_cfg.actor_freeze_steps,
     )
     device_torch = torch.device(agent_cfg.device)
     print(f"[Tracer] TD3 神经网络已建立并载入 {'GPU' if device_torch.type == 'cuda' else 'CPU'}！")

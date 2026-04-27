@@ -161,7 +161,8 @@ class TD3:
         delay: int = 2,
         policy_noise: float = 0.5,
         noise_clip: float = 0.5,
-        device: str = "cpu"
+        device: str = "cpu",
+        actor_freeze_steps: int = 0
     ):
         """
         初始化 TD3 算法
@@ -180,7 +181,9 @@ class TD3:
             policy_noise: 目标策略平滑噪声标准差
             noise_clip: 目标策略平滑噪声截断范围
             device: 计算设备
+            actor_freeze_steps: 前 N 次 update 只更新 critic，不更新 actor（0=关闭）
         """
+        self.actor_freeze_steps = actor_freeze_steps
         self.action_dim = action_dim
         self.action_bound = action_bound
         self.sigma = sigma
@@ -298,8 +301,13 @@ class TD3:
         critic_loss_2.backward()
         self.critic_2_optimizer.step()
 
-        # 延迟更新 Actor 和目标网络
-        if self.total_count % self.delay == 0:
+        # 延迟更新 Actor 和目标网络（受 actor_freeze_steps 保护）
+        actor_should_update = (
+            self.total_count > self.actor_freeze_steps
+            and self.total_count % self.delay == 0
+        )
+
+        if actor_should_update:
             # 更新 Actor（最大化 Q 值）
             actor_actions = self.actor(states)
             q_value = self.critic_1(states, actor_actions)
