@@ -1,5 +1,44 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.18-debug-roadmap] - 2026-04-27
+
+### 文档路线检查点说明
+
+- 这是个人研究用途的 debug roadmap tag，不是正式稳定发布版。
+- 本节点对应 commit `b4bf50f`。
+- 用于记录 BC-init TD3 failure analysis 之后，项目路线从"继续普通 TD3 调参"转向"protected TD3 / BC-assisted TD3"。
+
+### 主要修改
+
+- 更新 `docs/VSCMG_Master_Roadmap.md`。
+- 更新 `docs/v1.0_design_spec.md`。
+- 更新 `docs/v2.0_design_spec.md`。
+- 更新 `docs/v3.0_design_spec.md`。
+- 更新 `docs/v4.0_design_spec.md`。
+- 在文档中明确：
+  - 当前仍处于 debug 阶段，不是 v1.0 验收阶段；
+  - `gimbal_only` 是当前 debug / v1.0 前置阶段的中间验证接口；
+  - `full_8d` 仍是最终动作接口；
+  - 普通 TD3 fine-tune 暂不作为下一阶段主路线；
+  - 下一阶段主路线为 protected TD3 / BC-assisted TD3。
+
+### 路线调整结论
+
+- v1.0：先在 `gimbal_only` 模式下建立稳定控制闭环，再逐步恢复或扩展到 `full_8d`。
+- v2.0：暂不启动，需等待 v1.0 protected TD3 / BC-assisted TD3 稳定后再进入。
+- v3.0：暂不引入 domain randomization、伺服延迟、扰动力矩，避免放大 TD3 训练不稳定问题。
+- v4.0：暂不优先切换 Token / Attention 网络架构；当前主要瓶颈是 TD3 critic/actor 更新机制，不是 MLP 表达能力。
+
+### 未修改内容
+
+- 没有修改训练代码。
+- 没有修改 reward 函数。
+- 没有修改 PyramidVSCMG 几何公式。
+- 没有修改物理参数。
+- 没有提交模型文件。
+- 没有提交 `.pth` / `.npz` 文件。
+- 没有创建 GitHub Release。
+
 ## [v0.5.18-debug-bc-init] - 2026-04-27
 
 ### 调试检查点说明
