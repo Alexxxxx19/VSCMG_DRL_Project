@@ -153,6 +153,9 @@ def run_episode_with_logging(env, actor, device, seed=42, max_steps=1000):
     """跑一个完整 episode，记录每一步的状态（内部单位+显示层单位）"""
     obs, _ = env.reset(seed=seed)
 
+    # 动态获取 action 维度（兼容 4D gimbal_only 和 8D full_8d）
+    action_dim = env.action_space.shape[0]
+
     # 记录容器（内部单位：rad, MRP）
     history = {
         'step': [],
@@ -164,9 +167,8 @@ def run_episode_with_logging(env, actor, device, seed=42, max_steps=1000):
         'omega_w_1': [], 'omega_w_2': [], 'omega_w_3': [], 'omega_w_4': [],
         'omega_w_tilde_1': [], 'omega_w_tilde_2': [], 'omega_w_tilde_3': [], 'omega_w_tilde_4': [],
         'wheel_bias_sq': [],
-        # 动作原始数据
-        'action_1': [], 'action_2': [], 'action_3': [], 'action_4': [],
-        'action_5': [], 'action_6': [], 'action_7': [], 'action_8': [],
+        # 动作原始数据（根据 action_dim 动态初始化）
+        **{f'action_{i+1}': [] for i in range(action_dim)},
         'action_abs_mean': [], 'action_sat_rate': [],
         # Reward breakdown（包含新增的拆项指标）
         'reward_total': [], 'sigma_err_sq': [], 'omega_sq': [], 'action_sq': [],
@@ -180,6 +182,7 @@ def run_episode_with_logging(env, actor, device, seed=42, max_steps=1000):
     }
 
     states_tensor = torch.FloatTensor(obs).unsqueeze(0).to(device)
+    action_dim = env.action_space.shape[0]
 
     for step in range(max_steps):
         # Actor 推理（无噪声）
@@ -188,6 +191,7 @@ def run_episode_with_logging(env, actor, device, seed=42, max_steps=1000):
 
         # 执行
         obs, reward, terminated, truncated, info = env.step(actions)
+
 
         # 提取物理量（内部单位）
         q = env.q  # 当前四元数 [w,x,y,z]
@@ -227,7 +231,7 @@ def run_episode_with_logging(env, actor, device, seed=42, max_steps=1000):
             history[f'omega_w_{i+1}'].append(omega_w[i])
             history[f'omega_w_tilde_{i+1}'].append(omega_w_tilde[i])
         history['wheel_bias_sq'].append(wheel_bias_sq)
-        for i in range(8):
+        for i in range(action_dim):
             history[f'action_{i+1}'].append(actions[i])
         history['action_abs_mean'].append(action_abs_mean)
         history['action_sat_rate'].append(action_sat_rate)
@@ -383,7 +387,8 @@ def plot_actuator_metrics(history, output_path, use_chinese, model_name=None):
 
 def save_csv(history, output_path):
     """保存评估数据到 CSV（包含内部单位+显示层单位）"""
-    fieldnames = [
+    # 固定列（与 action 维度无关）
+    fixed_fields = [
         'step',
         # 内部单位（MRP / rad）
         'sigma_err_x', 'sigma_err_y', 'sigma_err_z', 'sigma_err_norm',
@@ -393,20 +398,21 @@ def save_csv(history, output_path):
         'omega_w_1', 'omega_w_2', 'omega_w_3', 'omega_w_4',
         'omega_w_tilde_1', 'omega_w_tilde_2', 'omega_w_tilde_3', 'omega_w_tilde_4',
         'wheel_bias_sq',
-        # 动作原始数据
-        'action_1', 'action_2', 'action_3', 'action_4',
-        'action_5', 'action_6', 'action_7', 'action_8',
         'action_abs_mean', 'action_sat_rate',
         # Reward breakdown
         'reward_total', 'sigma_err_sq', 'omega_sq', 'action_sq',
         'wheel_bias_sq_info',
-        'gimbal_action_sq', 'wheel_action_sq',  # 新增：拆项指标
+        'gimbal_action_sq', 'wheel_action_sq',
         # 显示层单位（deg / deg/s）
         'roll_deg', 'pitch_deg', 'yaw_deg',
         'omega_x_deg_s', 'omega_y_deg_s', 'omega_z_deg_s', 'omega_norm_deg_s',
         'delta_1_deg', 'delta_2_deg', 'delta_3_deg', 'delta_4_deg',
         'delta_dot_1_deg_s', 'delta_dot_2_deg_s', 'delta_dot_3_deg_s', 'delta_dot_4_deg_s',
     ]
+    # 动态列：从 history 中提取 action_N 列（兼容 4D/8D）
+    action_fields = sorted([k for k in history.keys() if k.startswith('action_') and k[7:].isdigit()],
+                           key=lambda x: int(x[7:]))
+    fieldnames = fixed_fields + action_fields
 
     with open(output_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
