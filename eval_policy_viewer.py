@@ -23,8 +23,9 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from envs.vscmg_env import VSCMGEnv
-from agents.td3_agent import TD3
+from agents.td3_agent import TD3, PolicyNet
 from configs.agent_config import make_default_agent_config
+from configs.env_config import VSCMGEnvConfig
 
 
 def setup_chinese_font():
@@ -39,43 +40,55 @@ def setup_chinese_font():
         return False
 
 
-def load_actor_from_checkpoint(model_path: str, device: str = "cpu"):
+def load_actor_from_checkpoint(model_path: str, device: str = "cpu", action_dim: int = None):
     """
     从 checkpoint 中加载 actor 网络（兼容多种保存格式）
 
     支持的格式：
     1. agent.save_model() 保存的完整格式：键为 'actor'
     2. 训练脚本保存的 checkpoint 格式：键为 'actor_state_dict'
+
+    Args:
+        model_path: checkpoint 文件路径
+        device: 计算设备
+        action_dim: 动作维度。如果为 None 则使用 config 默认值（8）。
+                   对于 gimbal_only 实验应传入 4。
     """
     checkpoint = torch.load(model_path, map_location=device)
 
-    # 创建临时 TD3 实例（只用于提取 actor 结构）
     cfg = make_default_agent_config()
     cfg.device = device
-    agent = TD3(
-        state_dim=cfg.state_dim,
-        action_dim=cfg.action_dim,
-        hidden_dim=cfg.hidden_dim,
-        action_bound=cfg.action_bound,
-        sigma=cfg.sigma,
-        tau=cfg.tau,
-        gamma=cfg.gamma,
-        critic_lr=cfg.critic_lr,
-        actor_lr=cfg.actor_lr,
-        delay=cfg.policy_delay,
-        policy_noise=cfg.policy_noise,
-        noise_clip=cfg.noise_clip,
-        device=device,
-    )
+    _action_dim = action_dim if action_dim is not None else cfg.action_dim
 
-    # 兼容两种键名格式
+    # 提取 actor state_dict（兼容两种格式）
     if 'actor' in checkpoint:
-        agent.actor.load_state_dict(checkpoint['actor'])
+        actor_sd = checkpoint['actor']
     elif 'actor_state_dict' in checkpoint:
-        agent.actor.load_state_dict(checkpoint['actor_state_dict'])
+        actor_sd = checkpoint['actor_state_dict']
     else:
         raise ValueError(f"无法识别的 checkpoint 格式，可用键: {list(checkpoint.keys())}")
 
+    # 尝试用指定 action_dim 加载（适用于 checkpoint 和 agent 的 action_dim 一致的情况）
+    agent = TD3(
+        state_dim=cfg.state_dim, action_dim=_action_dim,
+        hidden_dim=cfg.hidden_dim, action_bound=float(cfg.action_bound),
+        sigma=cfg.sigma, tau=cfg.tau, gamma=cfg.gamma,
+        critic_lr=cfg.critic_lr, actor_lr=cfg.actor_lr,
+        delay=cfg.policy_delay, policy_noise=cfg.policy_noise,
+        noise_clip=cfg.noise_clip, device=device,
+    )
+
+    # 严格加载：shape mismatch 直接报错，不允许静默跳过输出层
+    # PolicyNet 使用 fc3 作为输出层
+    if 'fc3.weight' in actor_sd and actor_sd['fc3.weight'].shape[0] != _action_dim:
+        raise RuntimeError(
+            f"[load_actor] Shape mismatch: checkpoint output dim = {actor_sd['fc3.weight'].shape[0]}, "
+            f"requested action_dim = {_action_dim}. "
+            f"Please load with the correct action_dim or use a compatible checkpoint. "
+            f"DO NOT silently skip output layer with random initialization."
+        )
+
+    agent.actor.load_state_dict(actor_sd)
     agent.actor.eval()
     return agent.actor
 
@@ -462,6 +475,9 @@ def parse_args():
                         help="计算设备 cpu/cuda（默认 cpu）")
     parser.add_argument("--output_dir", type=str, default="eval_outputs",
                         help="输出根目录（默认 eval_outputs）")
+    parser.add_argument("--action_mode", type=str, default="full_8d",
+                        choices=["full_8d", "gimbal_only"],
+                        help="环境动作模式（默认 full_8d）")
     return parser.parse_args()
 
 
@@ -475,16 +491,18 @@ if __name__ == "__main__":
     print("VSCMG 策略控制效果评估工具")
     print("=" * 70)
 
-    # 加载模型
-    print(f"\n[1/5] 加载模型: {args.model}")
-    actor = load_actor_from_checkpoint(args.model, args.device)
+    # 创建环境（先构造 env，以便从 action_space 读取 action_dim）
+    print("[1/5] 创建环境...")
+    env_cfg = VSCMGEnvConfig(action_mode=args.action_mode)
+    env = VSCMGEnv(config=env_cfg)
+    action_dim = env.action_space.shape[0]
 
-    # 创建环境
-    print("[2/5] 创建环境...")
-    env = VSCMGEnv()
+    # 加载模型（使用 env 提供的 action_dim，确保 4D/8D 严格匹配）
+    print(f"\n[2/5] 加载模型: {args.model} (action_dim={action_dim})")
+    actor = load_actor_from_checkpoint(args.model, args.device, action_dim=action_dim)
 
     # 跑 episode
-    print(f"[3/5] 运行评估 (seed={args.seed}, max_steps={args.max_steps})...")
+    print(f"[3/5] 运行评估 (seed={args.seed}, max_steps={args.max_steps}, action_mode={args.action_mode})...")
     history, terminated, truncated = run_episode_with_logging(
         env, actor, args.device, seed=args.seed, max_steps=args.max_steps
     )

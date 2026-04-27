@@ -160,18 +160,18 @@ class RewardNormalizationConfig:
 @dataclass
 class RewardConfig:
     """
-    v0.5.17 Stage A: 姿态单项 reward + reward scale 修复
+    v0.5.17 Stage A: 姿态单项训练
 
-    Stage A 目标：验证网络能否学到"动作 → 姿态误差下降"的基础映射。
-    - 只开姿态项，其他项权重为 0
-    - 通过 reward_scale 控制 episode return 量级
+    仅保留姿态误差主项，关闭所有辅助 penalty：
+    - w_omega = 0.00：角速度阻尼关闭（Stage A 专注姿态收敛）
+    - w_gimbal_act = 0.00 / w_wheel_act = 0.00：动作正则关闭
     """
-    w_att:        float = 1.00  # 姿态误差主项（Stage A 唯一开启项）
+    w_att:        float = 1.00  # 姿态误差主项
     w_omega:      float = 0.00  # 角速度阻尼（Stage A 关闭）
     w_wheel_bias: float = 0.00  # 飞轮偏置（Stage A 关闭）
     w_gimbal_act: float = 0.00  # 框架动作正则（Stage A 关闭）
     w_wheel_act:  float = 0.00  # 飞轮动作正则（Stage A 关闭）
-    reward_scale: float = 300.0  # reward 全局缩放因子，控制 return 量级
+    reward_scale: float = 300.0  # reward 全局缩放因子
 
 
 # =============================================================================
@@ -220,10 +220,11 @@ class VSCMGEnv(gym.Env):
         self.dynamics = SpacecraftDynamics(j_sc=self.cfg.current_j_sc.copy())
         self.vscmg = PyramidVSCMG()
 
-        # 动作空间（8维，固定不变）
-        self.action_space = spaces.Box(
-            low=-1.0, high=1.0, shape=(8,), dtype=np.float32
-        )
+        # 动作空间（维度由 action_mode 决定）
+        if self.cfg.action_mode == "gimbal_only":
+            self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
+        else:
+            self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(8,), dtype=np.float32)
 
         # 观测空间（22维，固定不变）
         obs_bound = np.full(22, 1e30, dtype=np.float32)
@@ -390,13 +391,23 @@ class VSCMGEnv(gym.Env):
         """
         执行一步仿真
 
-        动作解析（8维，固定不变）：
-        - 前 4 维：框架指令 → max_gimbal_rate rad/s
-        - 后 4 维：飞轮指令 → max_wheel_accel rad/s²
+        动作解析：
+        - full_8d（8维）: 前4维=框架指令 → max_gimbal_rate rad/s，后4维=飞轮指令 → max_wheel_accel rad/s²
+        - gimbal_only（4维）: 仅前4维有效，飞轮指令强制为 0
         """
-        # 动作缩放
+        # 动作维度安全检查
+        expected_dim = 4 if self.cfg.action_mode == "gimbal_only" else 8
+        if action.shape[0] != expected_dim:
+            raise ValueError(
+                f"action dim mismatch: got {action.shape[0]}, "
+                f"expected {expected_dim} for action_mode='{self.cfg.action_mode}'"
+            )
+        # 动作解析
         gimbal_rate_cmd = action[:4] * self.episode_cfg.max_gimbal_rate
-        wheel_accel_cmd = action[4:] * self.episode_cfg.max_wheel_accel
+        if self.cfg.action_mode == "gimbal_only":
+            wheel_accel_cmd = np.zeros(4, dtype=np.float64)
+        else:
+            wheel_accel_cmd = action[4:] * self.episode_cfg.max_wheel_accel
 
         # 一阶滞后延迟（默认关闭）
         gimbal_rate_cmd = self.episode_cfg.apply_actuator_delay(

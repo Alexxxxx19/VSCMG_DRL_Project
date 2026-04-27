@@ -157,6 +157,11 @@ class VSCMGEnvConfig:
     max_omega:              float  = 20.0        # rad/s（截断阈值）
     max_episode_steps:      int    = 1000
 
+    # --- 动作空间模式 ---
+    # "full_8d": 8维 gimbal_rate + wheel_accel（默认，与历史实验兼容）
+    # "gimbal_only": 4维 gimbal_rate，wheel_accel 强制为 0
+    action_mode:            str    = "full_8d"
+
     # --- 随机化配置 ---
     randomization: RandomizationConfig = field(default_factory=RandomizationConfig)
 
@@ -182,6 +187,11 @@ class VSCMGEnvConfig:
 
     # 框架角初始值（rad）
     current_init_gimbal: np.ndarray = field(default_factory=lambda: np.zeros(4))
+
+    # 框架角 bias（deg），打破 delta=0 的对称性，Stage A+ 使用
+    initial_delta_deg: np.ndarray = field(
+        default_factory=lambda: np.array([15.0, -15.0, 15.0, -15.0])
+    )
 
     # 上一时刻动作（用于一阶滞后延迟和动作平滑）
     _prev_action: np.ndarray = field(default_factory=lambda: np.zeros(8), repr=False)
@@ -233,12 +243,16 @@ class VSCMGEnvConfig:
             for _ in range(3)
         ])
 
-        # 框架角初始值
-        self.current_init_gimbal = np.array([
-            self.randomization.init_gimbal_range.sample(rng) if self.randomization.init_gimbal_enabled
-            else 0.0
-            for _ in range(4)
-        ])
+        # 框架角初始值（rad）
+        # 如果启用了 init_gimbal_range 随机化，则采样；否则使用 initial_delta_deg 指定的 bias 值
+        if self.randomization.init_gimbal_enabled:
+            self.current_init_gimbal = np.array([
+                self.randomization.init_gimbal_range.sample(rng)
+                for _ in range(4)
+            ])
+        else:
+            # 使用 initial_delta_deg 配置（deg -> rad 转换）
+            self.current_init_gimbal = np.deg2rad(self.initial_delta_deg)
 
         # 动作缓存归零
         self._prev_action = np.zeros(8)

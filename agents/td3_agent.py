@@ -315,7 +315,7 @@ class TD3:
             self.soft_update(self.critic_2, self.target_critic_2)
 
             return actor_loss.item(), critic_loss_1.item(), critic_loss_2.item()
-        return 0.0, critic_loss_1.item(), critic_loss_2.item()
+        return None, critic_loss_1.item(), critic_loss_2.item()
 
     def save_model(self, path: str):
         """
