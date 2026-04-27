@@ -162,7 +162,9 @@ class TD3:
         policy_noise: float = 0.5,
         noise_clip: float = 0.5,
         device: str = "cpu",
-        actor_freeze_steps: int = 0
+        actor_freeze_steps: int = 0,
+        bc_reg_weight: float = 0.0,
+        bc_reg_steps: int = 0,
     ):
         """
         初始化 TD3 算法
@@ -182,8 +184,14 @@ class TD3:
             noise_clip: 目标策略平滑噪声截断范围
             device: 计算设备
             actor_freeze_steps: 前 N 次 update 只更新 critic，不更新 actor（0=关闭）
+            bc_reg_weight: BC regularization 权重（0=关闭）
+            bc_reg_steps: BC reg 只在前 N 次 actor update 内生效（0=全期）
         """
         self.actor_freeze_steps = actor_freeze_steps
+        self.bc_reg_weight = bc_reg_weight
+        self.bc_reg_steps = bc_reg_steps
+        self.bc_actor = None
+        self.actor_update_count = 0
         self.action_dim = action_dim
         self.action_bound = action_bound
         self.sigma = sigma
@@ -247,6 +255,19 @@ class TD3:
         for param_target, param in zip(list(target_net.parameters()), list(net.parameters())):
             param_target.data.copy_(self.tau * param.data + (1 - self.tau) * param_target.data)
 
+    def set_bc_reference_from_current_actor(self):
+        """
+        将当前 self.actor 深拷贝为 frozen BC reference actor。
+
+        要求：必须在 load_actor_weights 之后调用。
+        BC reference actor 不加入优化器，不更新，仅用于计算 BC regularization loss。
+        """
+        import copy
+        self.bc_actor = copy.deepcopy(self.actor)
+        self.bc_actor.eval()
+        for p in self.bc_actor.parameters():
+            p.requires_grad = False
+
     def update(self, replay_buffer: ReplayBuffer, batch_size: int):
         """
         更新网络
@@ -308,22 +329,60 @@ class TD3:
         )
 
         if actor_should_update:
-            # 更新 Actor（最大化 Q 值）
+            # 更新 Actor
             actor_actions = self.actor(states)
-            q_value = self.critic_1(states, actor_actions)
-            actor_loss = -torch.mean(q_value)
+            actor_q_loss = -torch.mean(self.critic_1(states, actor_actions))
+
+            # BC regularization
+            bc_reg_active = (
+                self.bc_actor is not None
+                and self.bc_reg_weight > 0
+                and (
+                    self.bc_reg_steps == 0
+                    or self.actor_update_count < self.bc_reg_steps
+                )
+            )
+
+            if bc_reg_active:
+                with torch.no_grad():
+                    bc_actions = self.bc_actor(states)
+                bc_mse_loss = torch.mean((actor_actions - bc_actions) ** 2)
+                bc_reg_loss = self.bc_reg_weight * bc_mse_loss
+            else:
+                bc_mse_loss = torch.tensor(0.0, device=self.device)
+                bc_reg_loss = torch.tensor(0.0, device=self.device)
+
+            actor_loss_total = actor_q_loss + bc_reg_loss
 
             self.actor_optimizer.zero_grad()
-            actor_loss.backward()
+            actor_loss_total.backward()
             self.actor_optimizer.step()
+
+            self.actor_update_count += 1
 
             # 软更新目标网络
             self.soft_update(self.actor, self.target_actor)
             self.soft_update(self.critic_1, self.target_critic_1)
             self.soft_update(self.critic_2, self.target_critic_2)
 
-            return actor_loss.item(), critic_loss_1.item(), critic_loss_2.item()
-        return None, critic_loss_1.item(), critic_loss_2.item()
+            return (
+                actor_loss_total.item(),
+                critic_loss_1.item(),
+                critic_loss_2.item(),
+                actor_q_loss.item(),
+                bc_reg_loss.item(),
+                bc_mse_loss.item(),
+                float(bc_reg_active),
+            )
+        return (
+            None,
+            critic_loss_1.item(),
+            critic_loss_2.item(),
+            None,
+            None,
+            None,
+            0.0,
+        )
 
     def save_model(self, path: str):
         """

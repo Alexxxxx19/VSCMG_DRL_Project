@@ -116,6 +116,8 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "policy_noise": agent_cfg.policy_noise,
             "noise_clip": agent_cfg.noise_clip,
             "actor_freeze_steps": agent_cfg.actor_freeze_steps,
+            "bc_reg_weight": agent_cfg.bc_reg_weight,
+            "bc_reg_steps": agent_cfg.bc_reg_steps,
         },
         "reward_config": {
             "w_att": reward_cfg.w_att,
@@ -257,6 +259,10 @@ def parse_args():
                         help="Critic 学习率（覆盖 agent_config 默认值）")
     parser.add_argument("--actor_freeze_steps", type=int, default=None,
                         help="前 N 次 update 只更新 critic，不更新 actor（覆盖 agent_config 默认值）")
+    parser.add_argument("--bc_reg_weight", type=float, default=None,
+                        help="BC regularization 权重（覆盖 agent_config 默认值，0=关闭）")
+    parser.add_argument("--bc_reg_steps", type=int, default=None,
+                        help="BC reg 只在前 N 次 actor update 内生效（覆盖 agent_config 默认值，0=全期）")
 
     # --- Reward 权重参数 ---
     parser.add_argument("--w_gimbal_act", type=float, default=None,
@@ -318,6 +324,10 @@ def _apply_cli_agent_overrides(cfg: AgentConfig, args) -> AgentConfig:
         cfg.critic_lr = args.critic_lr
     if args.actor_freeze_steps is not None:
         cfg.actor_freeze_steps = args.actor_freeze_steps
+    if args.bc_reg_weight is not None:
+        cfg.bc_reg_weight = args.bc_reg_weight
+    if args.bc_reg_steps is not None:
+        cfg.bc_reg_steps = args.bc_reg_steps
     return cfg
 
 
@@ -471,6 +481,8 @@ if __name__ == "__main__":
         noise_clip=agent_cfg.noise_clip,
         device=agent_cfg.device,
         actor_freeze_steps=agent_cfg.actor_freeze_steps,
+        bc_reg_weight=agent_cfg.bc_reg_weight,
+        bc_reg_steps=agent_cfg.bc_reg_steps,
     )
     device_torch = torch.device(agent_cfg.device)
     print(f"[Tracer] TD3 神经网络已建立并载入 {'GPU' if device_torch.type == 'cuda' else 'CPU'}！")
@@ -486,6 +498,15 @@ if __name__ == "__main__":
             device=agent_cfg.device,
         )
         print(f"[ActorInit] actor initialized from: {args.actor_init_path}")
+
+        # BC regularization：从已加载的 actor 创建 frozen BC reference
+        if agent_cfg.bc_reg_weight > 0:
+            agent.set_bc_reference_from_current_actor()
+            print(f"[ActorInit] BC reference actor frozen (bc_reg_weight={agent_cfg.bc_reg_weight}, bc_reg_steps={agent_cfg.bc_reg_steps})")
+    elif agent_cfg.bc_reg_weight > 0:
+        raise ValueError(
+            "bc_reg_weight > 0 requires --actor_init_path so a frozen BC reference actor can be created."
+        )
 
     # ============================================================================
     # 第五步：打印配置快照
@@ -758,12 +779,17 @@ if __name__ == "__main__":
         # --- 网络更新 ---
         if global_step >= train_cfg.start_steps and global_step % train_cfg.update_every == 0:
             for _ in range(train_cfg.update_times):
-                actor_loss, c1_loss, c2_loss = agent.update(replay_buffer, train_cfg.batch_size)
+                actor_loss, c1_loss, c2_loss, actor_q_loss, bc_reg_loss, bc_mse_loss, bc_reg_active = agent.update(replay_buffer, train_cfg.batch_size)
                 if actor_loss is not None:
                     writer.add_scalar("Loss/Actor", actor_loss, global_step)
+                    writer.add_scalar("Loss/Actor_Total", actor_loss, global_step)
+                    writer.add_scalar("Loss/Actor_Q", actor_q_loss, global_step)
+                    writer.add_scalar("Loss/Actor_BC_Reg", bc_reg_loss, global_step)
+                    writer.add_scalar("Loss/Actor_BC_MSE", bc_mse_loss, global_step)
                     writer.add_scalar("PolicyHealth/actor_update_flag", 1, global_step)
                 else:
                     writer.add_scalar("PolicyHealth/actor_update_flag", 0, global_step)
+                writer.add_scalar("PolicyHealth/bc_reg_active", bc_reg_active, global_step)
                 writer.add_scalar("Loss/Critic_1", c1_loss, global_step)
                 writer.add_scalar("Loss/Critic_2", c2_loss, global_step)
                 writer.flush()
