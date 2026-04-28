@@ -100,6 +100,7 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "update_times": train_cfg.update_times,
             "batch_size": train_cfg.batch_size,
             "replay_capacity": train_cfg.replay_capacity,
+            "replay_prefill_path": train_cfg.replay_prefill_path,
             "checkpoint_frequency": train_cfg.checkpoint_frequency,
             "seed": train_cfg.seed,
         },
@@ -274,6 +275,10 @@ def parse_args():
     parser.add_argument("--actor_init_path", type=str, default=None,
                         help="从指定路径加载 actor 权重初始化 TD3 actor（BC-init 用途）")
 
+    # --- Replay Prefill ---
+    parser.add_argument("--replay_prefill_path", type=str, default=None,
+                        help="npz 文件路径，训练开始前预填充 replay buffer")
+
     return parser.parse_args()
 
 
@@ -302,6 +307,8 @@ def _apply_cli_overrides(cfg: TrainConfig, args) -> TrainConfig:
         cfg.checkpoint_frequency = args.checkpoint_frequency
     if args.seed is not None:
         cfg.seed = args.seed
+    if args.replay_prefill_path is not None:
+        cfg.replay_prefill_path = args.replay_prefill_path
     return cfg
 
 
@@ -366,6 +373,7 @@ def print_config_snapshot(train_cfg: TrainConfig, agent_cfg: AgentConfig,
     print(f"    replay_capacity = {train_cfg.replay_capacity:,}")
     print(f"    checkpoint_freq = {train_cfg.checkpoint_frequency:,}")
     print(f"    seed            = {train_cfg.seed}")
+    print(f"    replay_prefill_path = {train_cfg.replay_prefill_path}")
     print("-" * 40)
     print("  [Agent / TD3]")
     print(f"    state_dim       = {state_dim}")
@@ -387,6 +395,96 @@ def print_config_snapshot(train_cfg: TrainConfig, agent_cfg: AgentConfig,
     print(f"    initial_delta_deg = {_ecfg.initial_delta_deg.tolist()}")
     print(f"    init_attitude_range_deg = [{_ecfg.randomization.init_attitude_range.low}, {_ecfg.randomization.init_attitude_range.high}]")
     print("=" * 60)
+
+
+# =============================================================================
+# Replay prefill helper
+# =============================================================================
+def _prefill_replay_buffer(replay_buffer, prefill_path: str, state_dim: int, action_dim: int):
+    """
+    从 npz 文件加载 transition 数据并预填充到 ReplayBuffer。
+    """
+    import numpy as np
+
+    print(f"\n[ReplayPrefill] Loading from: {prefill_path}")
+    data = np.load(prefill_path, allow_pickle=False)
+
+    # Required fields check
+    required_fields = ["obs", "actions", "rewards", "next_obs", "dones"]
+    for field in required_fields:
+        if field not in data.keys():
+            raise ValueError(f"Missing required field '{field}' in {prefill_path}")
+
+    obs = data["obs"]
+    actions = data["actions"]
+    rewards = data["rewards"]
+    next_obs = data["next_obs"]
+    dones = data["dones"]
+
+    # Shape checks
+    if obs.ndim != 2:
+        raise ValueError(f"obs.ndim should be 2, got {obs.ndim}")
+    if actions.ndim != 2:
+        raise ValueError(f"actions.ndim should be 2, got {actions.ndim}")
+    if next_obs.ndim != 2:
+        raise ValueError(f"next_obs.ndim should be 2, got {next_obs.ndim}")
+    if rewards.ndim != 1:
+        raise ValueError(f"rewards.ndim should be 1, got {rewards.ndim}")
+    if dones.ndim != 1:
+        raise ValueError(f"dones.ndim should be 1, got {dones.ndim}")
+
+    n = obs.shape[0]
+    if not (actions.shape[0] == n and rewards.shape[0] == n and next_obs.shape[0] == n and dones.shape[0] == n):
+        raise ValueError(f"Shape mismatch among transition fields")
+
+    # Dimension checks
+    if obs.shape[1] != state_dim:
+        raise ValueError(f"obs.shape[1]={obs.shape[1]} != state_dim={state_dim}")
+    if next_obs.shape[1] != state_dim:
+        raise ValueError(f"next_obs.shape[1]={next_obs.shape[1]} != state_dim={state_dim}")
+    if actions.shape[1] != action_dim:
+        raise ValueError(f"actions.shape[1]={actions.shape[1]} != action_dim={action_dim}")
+
+    # Finite check
+    if not np.isfinite(obs).all():
+        raise ValueError("obs contains non-finite values")
+    if not np.isfinite(actions).all():
+        raise ValueError("actions contains non-finite values")
+    if not np.isfinite(rewards).all():
+        raise ValueError("rewards contains non-finite values")
+    if not np.isfinite(next_obs).all():
+        raise ValueError("next_obs contains non-finite values")
+
+    # Push to replay buffer
+    for i in range(n):
+        replay_buffer.push(
+            obs[i],
+            actions[i],
+            float(rewards[i]),
+            next_obs[i],
+            bool(dones[i])
+        )
+
+    # Statistics
+    print(f"[ReplayPrefill] Loaded {n} transitions")
+    print(f"[ReplayPrefill] obs shape: {obs.shape}, actions shape: {actions.shape}")
+    print(f"[ReplayPrefill] rewards: min={float(rewards.min()):.6f}, max={float(rewards.max()):.6f}, mean={float(rewards.mean()):.6f}, std={float(rewards.std()):.6f}")
+    print(f"[ReplayPrefill] action_abs_mean: {float(np.mean(np.abs(actions))):.6f}")
+    print(f"[ReplayPrefill] action_abs_max: {float(np.max(np.abs(actions))):.6f}")
+    print(f"[ReplayPrefill] action_sat_rate>0.95: {float(np.mean(np.abs(actions) > 0.95)):.6f}")
+    print(f"[ReplayPrefill] done_true_ratio: {float(np.mean(dones.astype(bool))):.4f}")
+    print(f"[ReplayPrefill] replay_buffer current length: {len(replay_buffer)}")
+
+    # init_attitude_deg distribution (if available)
+    if "init_attitude_deg" in data:
+        iad = data["init_attitude_deg"]
+        unique_angles = np.unique(iad[~np.isnan(iad)])
+        print(f"[ReplayPrefill] init_attitude_deg unique values: {unique_angles.tolist()}")
+        for angle in unique_angles:
+            count = int(np.sum(iad == angle))
+            print(f"  angle={float(angle):.1f} deg: {count} transitions")
+
+    data.close()
 
 
 if __name__ == "__main__":
@@ -506,6 +604,17 @@ if __name__ == "__main__":
     elif agent_cfg.bc_reg_weight > 0:
         raise ValueError(
             "bc_reg_weight > 0 requires --actor_init_path so a frozen BC reference actor can be created."
+        )
+
+    # ============================================================================
+    # 第四步 c：ReplayBuffer Prefill
+    # ============================================================================
+    if train_cfg.replay_prefill_path is not None:
+        _prefill_replay_buffer(
+            replay_buffer=replay_buffer,
+            prefill_path=train_cfg.replay_prefill_path,
+            state_dim=state_dim,
+            action_dim=action_dim,
         )
 
     # ============================================================================

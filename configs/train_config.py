@@ -15,6 +15,7 @@ VSCMG 训练调度参数集中配置
 """
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass
@@ -38,6 +39,7 @@ class TrainConfig:
     # --- Batch 与 Replay ---
     batch_size:         int    = 256        # 每次 update 的 batch 大小
     replay_capacity:    int    = 100_000    # ReplayBuffer 容量
+    replay_prefill_path: Optional[str] = None  # npz 文件路径，训练开始前预填充 replay buffer
 
     # --- 评估与保存 ---
     eval_frequency:     int    = 100_000    # 每N步评估一次（预留，当前未使用）
