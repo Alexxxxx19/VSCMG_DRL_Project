@@ -53,6 +53,9 @@ class TrainConfig:
     # --- 随机种子 ---
     seed:               int    = 42         # 全局随机种子（固定种子便于复现，CLI 可覆盖）
 
+    # --- Critic Warmup ---
+    critic_warmup_steps: int   = 0         # 训练主循环前 critic-only warmup 的 update 次数（0=关闭）
+
 
 def make_default_train_config() -> TrainConfig:
     """

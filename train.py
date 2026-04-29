@@ -101,6 +101,7 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "batch_size": train_cfg.batch_size,
             "replay_capacity": train_cfg.replay_capacity,
             "replay_prefill_path": train_cfg.replay_prefill_path,
+            "critic_warmup_steps": train_cfg.critic_warmup_steps,
             "checkpoint_frequency": train_cfg.checkpoint_frequency,
             "seed": train_cfg.seed,
         },
@@ -279,6 +280,10 @@ def parse_args():
     parser.add_argument("--replay_prefill_path", type=str, default=None,
                         help="npz 文件路径，训练开始前预填充 replay buffer")
 
+    # --- Critic Warmup ---
+    parser.add_argument("--critic_warmup_steps", type=int, default=None,
+                        help="训练主循环前使用 replay prefill 数据进行 critic-only warmup 的 update 次数；0=关闭")
+
     return parser.parse_args()
 
 
@@ -309,6 +314,8 @@ def _apply_cli_overrides(cfg: TrainConfig, args) -> TrainConfig:
         cfg.seed = args.seed
     if args.replay_prefill_path is not None:
         cfg.replay_prefill_path = args.replay_prefill_path
+    if args.critic_warmup_steps is not None:
+        cfg.critic_warmup_steps = args.critic_warmup_steps
     return cfg
 
 
@@ -374,6 +381,7 @@ def print_config_snapshot(train_cfg: TrainConfig, agent_cfg: AgentConfig,
     print(f"    checkpoint_freq = {train_cfg.checkpoint_frequency:,}")
     print(f"    seed            = {train_cfg.seed}")
     print(f"    replay_prefill_path = {train_cfg.replay_prefill_path}")
+    print(f"    critic_warmup_steps = {train_cfg.critic_warmup_steps}")
     print("-" * 40)
     print("  [Agent / TD3]")
     print(f"    state_dim       = {state_dim}")
@@ -485,6 +493,71 @@ def _prefill_replay_buffer(replay_buffer, prefill_path: str, state_dim: int, act
             print(f"  angle={float(angle):.1f} deg: {count} transitions")
 
     data.close()
+
+
+# =============================================================================
+# Critic warmup helper
+# =============================================================================
+def _run_critic_warmup(agent, replay_buffer, warmup_steps: int, batch_size: int):
+    """
+    在正式训练前使用 replay prefill 数据进行 critic-only warmup。
+
+    工作原理：
+    - warmup 前设置 agent.total_count = -warmup_steps
+    - warmup 阶段 total_count 从 -warmup_steps 增加到 0
+    - 由于 total_count <= 0，actor 不会更新（actor_should_update = total_count > actor_freeze_steps）
+    - warmup 后 total_count 恰好为 0，不消耗 actor_freeze_steps 配额
+    """
+    if warmup_steps <= 0:
+        return
+
+    if len(replay_buffer) < batch_size:
+        raise ValueError(
+            f"critic_warmup_steps={warmup_steps} requires replay_buffer length >= batch_size={batch_size}, "
+            f"but got {len(replay_buffer)}"
+        )
+
+    actor_update_count_before = agent.actor_update_count
+
+    # 设置 total_count 为负数，warmup 后会恰好回到 0
+    agent.total_count = -warmup_steps
+
+    critic1_losses = []
+    critic2_losses = []
+
+    for i in range(warmup_steps):
+        actor_loss, c1_loss, c2_loss, actor_q_loss, bc_reg_loss, bc_mse_loss, bc_reg_active = agent.update(
+            replay_buffer,
+            batch_size,
+        )
+
+        # warmup 阶段 actor 不应该更新
+        if actor_loss is not None:
+            raise RuntimeError(
+                f"critic warmup unexpectedly updated actor at step {i + 1}. "
+                f"actor_loss={actor_loss}, actor_update_count={agent.actor_update_count}"
+            )
+
+        critic1_losses.append(float(c1_loss))
+        critic2_losses.append(float(c2_loss))
+
+    # warmup 后 total_count 应该恰好为 0
+    if agent.total_count != 0:
+        raise RuntimeError(
+            f"after warmup, total_count={agent.total_count}, expected 0"
+        )
+
+    # warmup 后 actor_update_count 不应该增加
+    if agent.actor_update_count != actor_update_count_before:
+        raise RuntimeError(
+            f"after warmup, actor_update_count increased from {actor_update_count_before} to {agent.actor_update_count}"
+        )
+
+    print(f"\n[CriticWarmup] warmup_steps={warmup_steps}")
+    print(f"[CriticWarmup] final total_count={agent.total_count}")
+    print(f"[CriticWarmup] actor_update_count: {actor_update_count_before} -> {agent.actor_update_count} (unchanged)")
+    print(f"[CriticWarmup] critic_1_loss: first={critic1_losses[0]:.6f}, last={critic1_losses[-1]:.6f}, mean={sum(critic1_losses) / len(critic1_losses):.6f}")
+    print(f"[CriticWarmup] critic_2_loss: first={critic2_losses[0]:.6f}, last={critic2_losses[-1]:.6f}, mean={sum(critic2_losses) / len(critic2_losses):.6f}")
 
 
 if __name__ == "__main__":
@@ -615,6 +688,19 @@ if __name__ == "__main__":
             prefill_path=train_cfg.replay_prefill_path,
             state_dim=state_dim,
             action_dim=action_dim,
+        )
+
+    # ============================================================================
+    # 第四步 d：Critic Warmup
+    # ============================================================================
+    if train_cfg.critic_warmup_steps > 0:
+        if train_cfg.replay_prefill_path is None:
+            raise ValueError("critic_warmup_steps > 0 requires --replay_prefill_path")
+        _run_critic_warmup(
+            agent=agent,
+            replay_buffer=replay_buffer,
+            warmup_steps=train_cfg.critic_warmup_steps,
+            batch_size=train_cfg.batch_size,
         )
 
     # ============================================================================
