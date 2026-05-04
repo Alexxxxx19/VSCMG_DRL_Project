@@ -812,6 +812,9 @@ if __name__ == "__main__":
                 'actor_state_dict': agent.actor.state_dict(),
                 'critic_1_state_dict': agent.critic_1.state_dict(),
                 'critic_2_state_dict': agent.critic_2.state_dict(),
+                'target_actor_state_dict': agent.target_actor.state_dict(),
+                'target_critic_1_state_dict': agent.target_critic_1.state_dict(),
+                'target_critic_2_state_dict': agent.target_critic_2.state_dict(),
                 'global_step': global_step,
             }, checkpoint_path)
             print(f"[Checkpoint] 检查点已保存至: {checkpoint_path}")
@@ -1000,6 +1003,9 @@ if __name__ == "__main__":
         'actor_state_dict': agent.actor.state_dict(),
         'critic_1_state_dict': agent.critic_1.state_dict(),
         'critic_2_state_dict': agent.critic_2.state_dict(),
+        'target_actor_state_dict': agent.target_actor.state_dict(),
+        'target_critic_1_state_dict': agent.target_critic_1.state_dict(),
+        'target_critic_2_state_dict': agent.target_critic_2.state_dict(),
         'global_step': actual_steps,
     }, final_path)
     print(f"[Checkpoint] 最终模型已保存至: {final_path}")
