@@ -168,21 +168,28 @@ def build_groups(d):
 def load_exclude_group_keys(path):
     if path is None:
         return set()
-    if not os.path.exists(path):
-        raise FileNotFoundError("exclude_labels_path not found: {}".format(path))
-    data = np.load(path, allow_pickle=False)
-    required = ["group_episode_id", "group_base_step_id", "init_attitude_deg"]
-    for k in required:
-        if k not in data.files:
-            raise ValueError("exclude labels missing field: {}".format(k))
-    keys = set()
-    for i in range(len(data["group_episode_id"])):
-        keys.add((
-            int(data["group_episode_id"][i]),
-            int(data["group_base_step_id"][i]),
-            float(data["init_attitude_deg"][i]),
-        ))
-    return keys
+
+    paths = [p.strip() for p in str(path).split(",") if p.strip()]
+    if not paths:
+        return set()
+
+    result_keys = set()
+    for p in paths:
+        if not os.path.exists(p):
+            raise FileNotFoundError("exclude_labels_path not found: {}".format(p))
+        data = np.load(p, allow_pickle=False)
+        required = ["group_episode_id", "group_base_step_id", "init_attitude_deg"]
+        for k in required:
+            if k not in data.files:
+                raise ValueError("exclude labels missing field in {}: {}".format(p, k))
+        for i in range(len(data["group_episode_id"])):
+            result_keys.add((
+                int(data["group_episode_id"][i]),
+                int(data["group_base_step_id"][i]),
+                float(data["init_attitude_deg"][i]),
+            ))
+
+    return result_keys
 
 
 # =============================================================================
@@ -309,8 +316,11 @@ def main():
     print("  max_gimbal_rate: {}".format(args.max_gimbal_rate))
     print("  seed:            {}".format(args.seed))
     print("  action_sources:  {}".format(action_sources))
-    print("  exclude_labels:  {}".format(
-        args.exclude_labels_path or "(none)"))
+    exclude_files_count = 0
+    if args.exclude_labels_path:
+        exclude_files_count = len([p.strip() for p in args.exclude_labels_path.split(",") if p.strip()])
+    print("  exclude_labels:  {} ({} file(s))".format(
+        args.exclude_labels_path or "(none)", exclude_files_count))
     print("  dry_run:         {}".format(args.dry_run))
     print("  force:           {}".format(args.force))
 
@@ -350,9 +360,10 @@ def main():
     # Load exclude set
     exclude_keys = load_exclude_group_keys(args.exclude_labels_path)
     if args.exclude_labels_path is not None:
-        print("\n[Exclude] exclude_labels_path: {}".format(
-            args.exclude_labels_path))
-        print("[Exclude] exclude group keys: {}".format(len(exclude_keys)))
+        paths = [p.strip() for p in args.exclude_labels_path.split(",") if p.strip()]
+        print("\n[Exclude] exclude_files: {}".format(len(paths)))
+        print("[Exclude] exclude_labels_path: {}".format(args.exclude_labels_path))
+        print("[Exclude] exclude_groups: {}".format(len(exclude_keys)))
 
     # Sample groups
     rng = np.random.default_rng(args.seed)
