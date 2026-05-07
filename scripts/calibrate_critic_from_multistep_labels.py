@@ -146,7 +146,7 @@ def load_data(labels_path, candidate_path):
 # =============================================================================
 # Group construction
 # =============================================================================
-def build_groups_from_labels(labels, bad_sources, bc_source):
+def build_groups_from_labels(labels, bad_sources, bc_source, ranking_mode="bc_vs_bad"):
     n = len(labels["row_index"])
     gkey = np.array(
         [(int(labels["group_episode_id"][i]),
@@ -165,19 +165,30 @@ def build_groups_from_labels(labels, bad_sources, bc_source):
         for r in rows:
             src_map[str(labels["action_source"][r])] = r
 
-        if bc_source not in src_map:
-            skipped += 1
-            continue
-
-        missing = [s for s in bad_sources if s not in src_map]
-        if missing:
-            skipped += 1
-            continue
-
-        groups.append({
-            "bc": src_map[bc_source],
-            "bad": {s: src_map[s] for s in bad_sources},
-        })
+        if ranking_mode == "bc_vs_bad":
+            if bc_source not in src_map:
+                skipped += 1
+                continue
+            missing = [s for s in bad_sources if s not in src_map]
+            if missing:
+                skipped += 1
+                continue
+            groups.append({
+                "bc": src_map[bc_source],
+                "bad": {s: src_map[s] for s in bad_sources},
+                "rows": src_map,
+            })
+        else:
+            if len(src_map) < 2:
+                skipped += 1
+                continue
+            entry = {
+                "rows": src_map,
+                "bad": {s: src_map[s] for s in bad_sources if s in src_map},
+            }
+            if bc_source in src_map:
+                entry["bc"] = src_map[bc_source]
+            groups.append(entry)
 
     return groups, skipped
 
@@ -221,65 +232,123 @@ def load_critics(checkpoint_path, device="cpu"):
 # =============================================================================
 # Evaluation
 # =============================================================================
-def evaluate_ranking(c1, c2, groups, labels, candidate, device="cpu", bc_source="bc_actor"):
+def evaluate_ranking(c1, c2, groups, labels, candidate, device="cpu",
+                     bc_source="bc_actor", return_margin_eps=1e-8):
     c1.eval(); c2.eval()
 
-    bc_q1_list = []
-    bc_q2_list = []
-    bad_q1 = {s: [] for s in groups[0]["bad"].keys()}
-    bad_q2 = {s: [] for s in groups[0]["bad"].keys()}
+    n_groups = len(groups)
+    row_index = labels["row_index"]
+    disc_ret = labels["discounted_return"]
+
+    all_sources = set()
+    all_bad_sources = set()
+    for g in groups:
+        all_sources.update(g["rows"].keys())
+        if "bad" in g:
+            all_bad_sources.update(g["bad"].keys())
+
+    group_qmaps = []
+    group_retmaps = []
 
     with torch.no_grad():
         for g in groups:
-            bc_row = g["bc"]
-            obs_bc = torch.FloatTensor(
-                candidate["obs"][labels["row_index"][bc_row]]
-            ).unsqueeze(0).to(device)
-            act_bc = torch.FloatTensor(
-                candidate["actions"][labels["row_index"][bc_row]]
-            ).unsqueeze(0).to(device)
-            q1_bc = float(c1(obs_bc, act_bc).cpu().item())
-            q2_bc = float(c2(obs_bc, act_bc).cpu().item())
-            bc_q1_list.append(q1_bc)
-            bc_q2_list.append(q2_bc)
-
-            for s, row in g["bad"].items():
-                obs_b = torch.FloatTensor(
-                    candidate["obs"][labels["row_index"][row]]
+            qmap = {}
+            retmap = {}
+            for src, lbl_row in g["rows"].items():
+                obs_t = torch.FloatTensor(
+                    candidate["obs"][int(row_index[lbl_row])]
                 ).unsqueeze(0).to(device)
-                act_b = torch.FloatTensor(
-                    candidate["actions"][labels["row_index"][row]]
+                act_t = torch.FloatTensor(
+                    candidate["actions"][int(row_index[lbl_row])]
                 ).unsqueeze(0).to(device)
-                q1_b = float(c1(obs_b, act_b).cpu().item())
-                q2_b = float(c2(obs_b, act_b).cpu().item())
-                bad_q1[s].append(q1_b)
-                bad_q2[s].append(q2_b)
+                q1 = float(c1(obs_t, act_t).cpu().item())
+                q2 = float(c2(obs_t, act_t).cpu().item())
+                qmap[src] = {"q1": q1, "q2": q2, "qmin": min(q1, q2)}
+                retmap[src] = float(disc_ret[lbl_row])
+            group_qmaps.append(qmap)
+            group_retmaps.append(retmap)
 
-    bc_q1 = np.array(bc_q1_list)
-    bc_q2 = np.array(bc_q2_list)
-
+    # --- Old bc-vs-bad results (per-group) ---
     results = {}
-    for s in bad_q1:
-        bq1 = np.array(bad_q1[s])
-        bq2 = np.array(bad_q2[s])
-        q1_pos = (bc_q1 > bq1).mean()
-        q2_pos = (bc_q2 > bq2).mean()
-        q_min_pos = (np.minimum(bc_q1, bc_q2) > np.minimum(bq1, bq2)).mean()
-        results[s] = {
-            "q1_pos_rate": q1_pos,
-            "q2_pos_rate": q2_pos,
-            "q_min_pos_rate": q_min_pos,
-        }
+    for s in all_bad_sources:
+        q1_pos_list = []
+        q2_pos_list = []
+        qmin_pos_list = []
+        for gi in range(n_groups):
+            qmap = group_qmaps[gi]
+            if bc_source in qmap and s in qmap:
+                q1_pos_list.append(float(qmap[bc_source]["q1"] > qmap[s]["q1"]))
+                q2_pos_list.append(float(qmap[bc_source]["q2"] > qmap[s]["q2"]))
+                qmin_pos_list.append(float(qmap[bc_source]["qmin"] > qmap[s]["qmin"]))
+        if q1_pos_list:
+            results[s] = {
+                "q1_pos_rate": np.mean(q1_pos_list),
+                "q2_pos_rate": np.mean(q2_pos_list),
+                "q_min_pos_rate": np.mean(qmin_pos_list),
+                "n_compared": len(q1_pos_list),
+            }
+        else:
+            results[s] = {
+                "q1_pos_rate": 0.0,
+                "q2_pos_rate": 0.0,
+                "q_min_pos_rate": 0.0,
+                "n_compared": 0,
+            }
 
-    top_counts = {s: 0 for s in list(bad_q1.keys()) + [bc_source]}
-    for gi in range(len(groups)):
-        scores = {bc_source: min(bc_q1[gi], bc_q2[gi])}
-        for s in bad_q1:
-            scores[s] = min(bad_q1[s][gi], bad_q2[s][gi])
+    # --- Top-by-Q ---
+    top_counts = {s: 0 for s in all_sources}
+    for gi in range(n_groups):
+        qmap = group_qmaps[gi]
+        scores = {src: qmap[src]["qmin"] for src in qmap}
         winner = max(scores, key=scores.get)
         top_counts[winner] += 1
 
-    return results, top_counts
+    # --- Return-based metrics ---
+    ret_top_counts = {s: 0 for s in all_sources}
+    top_alignment = 0
+    pairwise_agree = 0
+    pairwise_total = 0
+
+    for gi in range(n_groups):
+        retmap = group_retmaps[gi]
+        qmap = group_qmaps[gi]
+        srcs = list(retmap.keys())
+
+        ret_winner = max(retmap, key=retmap.get)
+        ret_top_counts[ret_winner] += 1
+
+        q_scores = {src: qmap[src]["qmin"] for src in qmap}
+        q_winner = max(q_scores, key=q_scores.get)
+        if q_winner == ret_winner:
+            top_alignment += 1
+
+        for i_idx in range(len(srcs)):
+            for j_idx in range(i_idx + 1, len(srcs)):
+                si = srcs[i_idx]
+                sj = srcs[j_idx]
+                ri = retmap[si]
+                rj = retmap[sj]
+                if abs(ri - rj) < return_margin_eps:
+                    continue
+                q_i = qmap[si]["qmin"]
+                q_j = qmap[sj]["qmin"]
+                pairwise_total += 1
+                if (ri > rj) == (q_i > q_j):
+                    pairwise_agree += 1
+
+    if pairwise_total > 0:
+        pairwise_rate = pairwise_agree / pairwise_total * 100
+    else:
+        pairwise_rate = 0.0
+
+    return_metrics = {
+        "top_by_return": ret_top_counts,
+        "top_by_Q": top_counts,
+        "top_alignment": (top_alignment, n_groups, top_alignment / n_groups * 100),
+        "pairwise_agreement": (pairwise_agree, pairwise_total, pairwise_rate),
+    }
+
+    return results, top_counts, return_metrics
 
 
 # =============================================================================
@@ -287,13 +356,23 @@ def evaluate_ranking(c1, c2, groups, labels, candidate, device="cpu", bc_source=
 # =============================================================================
 def train_critics(c1, c2, tc1, tc2, groups, labels, candidate,
                   steps, lr, margin, rank_weight, reg_weight,
-                  batch_groups, seed, device="cpu"):
+                  batch_groups, seed, device="cpu",
+                  ranking_mode="bc_vs_bad",
+                  return_margin_eps=1e-8,
+                  zero_rank_weight=2.0,
+                  regression_mode="bc",
+                  bc_source="bc_actor"):
     rng = np.random.default_rng(seed)
     optimizer = torch.optim.Adam(list(c1.parameters()) + list(c2.parameters()), lr=lr)
 
     n_groups = len(groups)
+    row_index = labels["row_index"]
+    disc_ret = labels["discounted_return"]
+
     print("\n[Train] Starting {} steps, {} groups, batch_groups={}".format(
         steps, n_groups, batch_groups))
+    print("        ranking_mode={}  regression_mode={}".format(
+        ranking_mode, regression_mode))
 
     for step in range(steps):
         c1.train(); c2.train()
@@ -308,35 +387,125 @@ def train_critics(c1, c2, tc1, tc2, groups, labels, candidate,
 
         for gi in batch_idx:
             g = groups[gi]
-            bc_row = g["bc"]
-            obs_bc = torch.FloatTensor(
-                candidate["obs"][labels["row_index"][bc_row]]
-            ).unsqueeze(0).to(device)
-            act_bc = torch.FloatTensor(
-                candidate["actions"][labels["row_index"][bc_row]]
-            ).unsqueeze(0).to(device)
-            ret_bc = float(labels["discounted_return"][bc_row])
-            ret_bc_t = torch.FloatTensor([ret_bc]).to(device)
+            rows_map = g["rows"]
 
-            q1_bc = c1(obs_bc, act_bc)
-            q2_bc = c2(obs_bc, act_bc)
+            if ranking_mode == "bc_vs_bad":
+                if "bc" not in g:
+                    continue
 
-            reg_losses.append(F.mse_loss(q1_bc.view(-1), ret_bc_t.view(-1)))
-            reg_losses.append(F.mse_loss(q2_bc.view(-1), ret_bc_t.view(-1)))
-
-            for s, row in g["bad"].items():
-                obs_b = torch.FloatTensor(
-                    candidate["obs"][labels["row_index"][row]]
+                bc_lbl = g["bc"]
+                obs_bc = torch.FloatTensor(
+                    candidate["obs"][int(row_index[bc_lbl])]
                 ).unsqueeze(0).to(device)
-                act_b = torch.FloatTensor(
-                    candidate["actions"][labels["row_index"][row]]
+                act_bc = torch.FloatTensor(
+                    candidate["actions"][int(row_index[bc_lbl])]
                 ).unsqueeze(0).to(device)
+                ret_bc = float(disc_ret[bc_lbl])
+                ret_bc_t = torch.FloatTensor([ret_bc]).to(device)
 
-                q1_b = c1(obs_b, act_b)
-                q2_b = c2(obs_b, act_b)
+                q1_bc = c1(obs_bc, act_bc)
+                q2_bc = c2(obs_bc, act_bc)
 
-                rank_losses.append(torch.clamp(margin - (q1_bc - q1_b), min=0.0).mean())
-                rank_losses.append(torch.clamp(margin - (q2_bc - q2_b), min=0.0).mean())
+                reg_losses.append(F.mse_loss(q1_bc.view(-1), ret_bc_t.view(-1)))
+                reg_losses.append(F.mse_loss(q2_bc.view(-1), ret_bc_t.view(-1)))
+
+                for s, bad_lbl in g["bad"].items():
+                    obs_b = torch.FloatTensor(
+                        candidate["obs"][int(row_index[bad_lbl])]
+                    ).unsqueeze(0).to(device)
+                    act_b = torch.FloatTensor(
+                        candidate["actions"][int(row_index[bad_lbl])]
+                    ).unsqueeze(0).to(device)
+                    q1_b = c1(obs_b, act_b)
+                    q2_b = c2(obs_b, act_b)
+                    rank_losses.append(
+                        torch.clamp(margin - (q1_bc - q1_b), min=0.0).mean())
+                    rank_losses.append(
+                        torch.clamp(margin - (q2_bc - q2_b), min=0.0).mean())
+
+            else:
+                srcs = list(rows_map.keys())
+
+                retmap = {}
+                q1_map = {}
+                q2_map = {}
+                for src in srcs:
+                    lbl_row = rows_map[src]
+                    obs_t = torch.FloatTensor(
+                        candidate["obs"][int(row_index[lbl_row])]
+                    ).unsqueeze(0).to(device)
+                    act_t = torch.FloatTensor(
+                        candidate["actions"][int(row_index[lbl_row])]
+                    ).unsqueeze(0).to(device)
+                    retmap[src] = float(disc_ret[lbl_row])
+                    q1_map[src] = c1(obs_t, act_t)
+                    q2_map[src] = c2(obs_t, act_t)
+
+                for i_idx in range(len(srcs)):
+                    for j_idx in range(i_idx + 1, len(srcs)):
+                        si = srcs[i_idx]
+                        sj = srcs[j_idx]
+                        ri = retmap[si]
+                        rj = retmap[sj]
+
+                        if abs(ri - rj) < return_margin_eps:
+                            continue
+
+                        if ri > rj:
+                            q1_w, q2_w = q1_map[si], q2_map[si]
+                            q1_l, q2_l = q1_map[sj], q2_map[sj]
+                            loser_src = sj
+                        else:
+                            q1_w, q2_w = q1_map[sj], q2_map[sj]
+                            q1_l, q2_l = q1_map[si], q2_map[si]
+                            loser_src = si
+
+                        pair_loss_q1 = torch.clamp(
+                            margin - (q1_w - q1_l), min=0.0).mean()
+                        pair_loss_q2 = torch.clamp(
+                            margin - (q2_w - q2_l), min=0.0).mean()
+
+                        w = zero_rank_weight if loser_src == "zero_action" else 1.0
+                        rank_losses.append(w * pair_loss_q1)
+                        rank_losses.append(w * pair_loss_q2)
+
+                if regression_mode == "top":
+                    top_src = max(retmap, key=retmap.get)
+                    q1_top = q1_map[top_src]
+                    q2_top = q2_map[top_src]
+                    ret_top_t = torch.FloatTensor([retmap[top_src]]).to(device)
+                    reg_losses.append(F.mse_loss(q1_top.view(-1), ret_top_t.view(-1)))
+                    reg_losses.append(F.mse_loss(q2_top.view(-1), ret_top_t.view(-1)))
+
+                elif regression_mode == "bc":
+                    if "bc" in g:
+                        bc_lbl = g["bc"]
+                        obs_bc = torch.FloatTensor(
+                            candidate["obs"][int(row_index[bc_lbl])]
+                        ).unsqueeze(0).to(device)
+                        act_bc = torch.FloatTensor(
+                            candidate["actions"][int(row_index[bc_lbl])]
+                        ).unsqueeze(0).to(device)
+                        ret_bc_t = torch.FloatTensor([float(disc_ret[bc_lbl])]).to(device)
+                        q1_bc = c1(obs_bc, act_bc)
+                        q2_bc = c2(obs_bc, act_bc)
+                        reg_losses.append(F.mse_loss(q1_bc.view(-1), ret_bc_t.view(-1)))
+                        reg_losses.append(F.mse_loss(q2_bc.view(-1), ret_bc_t.view(-1)))
+
+                elif regression_mode == "all":
+                    for src in srcs:
+                        lbl_row = rows_map[src]
+                        obs_r = torch.FloatTensor(
+                            candidate["obs"][int(row_index[lbl_row])]
+                        ).unsqueeze(0).to(device)
+                        act_r = torch.FloatTensor(
+                            candidate["actions"][int(row_index[lbl_row])]
+                        ).unsqueeze(0).to(device)
+                        ret_r_t = torch.FloatTensor([retmap[src]]).to(device)
+                        q1_r = c1(obs_r, act_r)
+                        q2_r = c2(obs_r, act_r)
+                        reg_losses.append(F.mse_loss(q1_r.view(-1), ret_r_t.view(-1)))
+                        reg_losses.append(F.mse_loss(q2_r.view(-1), ret_r_t.view(-1)))
 
         rank_loss = torch.stack(rank_losses).mean() if rank_losses else torch.tensor(0.0, device=device)
         reg_loss = torch.stack(reg_losses).mean() if reg_losses else torch.tensor(0.0, device=device)
@@ -349,13 +518,12 @@ def train_critics(c1, c2, tc1, tc2, groups, labels, candidate,
         loss.backward()
         optimizer.step()
 
-        # Soft update targets
         tau = 0.005
         with torch.no_grad():
-            for param, target_param in zip(c1.parameters(), tc1.parameters()):
-                target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
-            for param, target_param in zip(c2.parameters(), tc2.parameters()):
-                target_param.data.copy_(tau * param.data + (1 - tau) * target_param.data)
+            for p, tp in zip(c1.parameters(), tc1.parameters()):
+                tp.data.copy_(tau * p.data + (1 - tau) * tp.data)
+            for p, tp in zip(c2.parameters(), tc2.parameters()):
+                tp.data.copy_(tau * p.data + (1 - tau) * tp.data)
 
         if (step + 1) % 100 == 0 or step == 0:
             print("  step {:4d}/{}  loss={:.6f}  rank={:.6f}  reg={:.6f}".format(
@@ -441,6 +609,33 @@ def parse_args():
         "--force", action="store_true",
         help="Allow overwriting existing output",
     )
+    parser.add_argument(
+        "--ranking_mode", type=str, default="bc_vs_bad",
+        choices=["bc_vs_bad", "return_pairwise"],
+        help=(
+            "Ranking loss mode. bc_vs_bad keeps the old behavior. "
+            "return_pairwise ranks actions by discounted_return within each group."
+        ),
+    )
+    parser.add_argument(
+        "--return_margin_eps", type=float, default=1e-8,
+        help="Minimum return difference required to create a pairwise ranking constraint.",
+    )
+    parser.add_argument(
+        "--zero_rank_weight", type=float, default=2.0,
+        help=(
+            "Extra multiplier for ranking pairs where zero_action is the loser. "
+            "Used only in return_pairwise mode."
+        ),
+    )
+    parser.add_argument(
+        "--regression_mode", type=str, default="bc",
+        choices=["none", "bc", "top", "all"],
+        help=(
+            "Which actions receive light return regression. "
+            "For return_pairwise, top is recommended. For bc_vs_bad, bc is the default."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -468,6 +663,10 @@ def main():
     print("  device:         {}".format(args.device))
     print("  bc_source:      {}".format(args.bc_source))
     print("  bad_sources:    {}".format(bad_sources))
+    print("  ranking_mode:   {}".format(args.ranking_mode))
+    print("  return_margin_eps: {}".format(args.return_margin_eps))
+    print("  zero_rank_weight: {}".format(args.zero_rank_weight))
+    print("  regression_mode: {}".format(args.regression_mode))
     print("  dry_run:        {}".format(args.dry_run))
 
     # Output safety
@@ -491,7 +690,9 @@ def main():
 
     # Build groups
     print("[Groups] Building...")
-    groups, skipped = build_groups_from_labels(labels, bad_sources, args.bc_source)
+    groups, skipped = build_groups_from_labels(
+        labels, bad_sources, args.bc_source, ranking_mode=args.ranking_mode
+    )
     print("[Groups] {} valid groups, {} skipped".format(len(groups), skipped))
 
     if len(groups) == 0:
@@ -509,20 +710,33 @@ def main():
 
     # Initial evaluation
     print("\n[Eval] Initial Q ranking (before calibration)...")
-    rank_results, top_counts = evaluate_ranking(
+    rank_results, top_counts, init_rm = evaluate_ranking(
         c1, c2, groups, labels, candidate,
-        device=args.device, bc_source=args.bc_source)
+        device=args.device, bc_source=args.bc_source,
+        return_margin_eps=args.return_margin_eps)
 
     for s in bad_sources:
-        r = rank_results[s]
-        print("  {}: Q1_pos={:.1f}%  Q2_pos={:.1f}%  Qmin_pos={:.1f}%".format(
-            s, r["q1_pos_rate"] * 100, r["q2_pos_rate"] * 100,
-            r["q_min_pos_rate"] * 100))
+        if s in rank_results:
+            r = rank_results[s]
+            print("  {}: Q1_pos={:.1f}%  Q2_pos={:.1f}%  Qmin_pos={:.1f}%".format(
+                s, r["q1_pos_rate"] * 100, r["q2_pos_rate"] * 100,
+                r["q_min_pos_rate"] * 100))
 
     print("  top_by_Q:")
     for s, cnt in sorted(top_counts.items(), key=lambda x: -x[1]):
         print("    {}: {}/{} ({:.0f}%)".format(
             s, cnt, len(groups), cnt / len(groups) * 100))
+
+    print("  top_by_return:")
+    for s, cnt in sorted(init_rm["top_by_return"].items(), key=lambda x: -x[1]):
+        print("    {}: {}/{} ({:.0f}%)".format(
+            s, cnt, len(groups), cnt / len(groups) * 100))
+    align_n, align_tot, align_pct = init_rm["top_alignment"]
+    print("  top_alignment_with_return: {}/{} ({:.1f}%)".format(
+        align_n, align_tot, align_pct))
+    pa_n, pa_tot, pa_pct = init_rm["pairwise_agreement"]
+    print("  pairwise_return_agreement: {}/{} ({:.1f}%)".format(
+        pa_n, pa_tot, pa_pct))
 
     if args.dry_run:
         print("\n[DRY RUN] Plan:")
@@ -542,24 +756,42 @@ def main():
         steps=args.steps, lr=args.lr, margin=args.margin,
         rank_weight=args.rank_weight, reg_weight=args.reg_weight,
         batch_groups=args.batch_groups, seed=args.seed, device=args.device,
+        ranking_mode=args.ranking_mode,
+        return_margin_eps=args.return_margin_eps,
+        zero_rank_weight=args.zero_rank_weight,
+        regression_mode=args.regression_mode,
+        bc_source=args.bc_source,
     )
 
     # Final evaluation
     print("\n[Eval] Final Q ranking (after calibration)...")
-    rank_results, top_counts = evaluate_ranking(
+    rank_results, top_counts, final_rm = evaluate_ranking(
         c1, c2, groups, labels, candidate,
-        device=args.device, bc_source=args.bc_source)
+        device=args.device, bc_source=args.bc_source,
+        return_margin_eps=args.return_margin_eps)
 
     for s in bad_sources:
-        r = rank_results[s]
-        print("  {}: Q1_pos={:.1f}%  Q2_pos={:.1f}%  Qmin_pos={:.1f}%".format(
-            s, r["q1_pos_rate"] * 100, r["q2_pos_rate"] * 100,
-            r["q_min_pos_rate"] * 100))
+        if s in rank_results:
+            r = rank_results[s]
+            print("  {}: Q1_pos={:.1f}%  Q2_pos={:.1f}%  Qmin_pos={:.1f}%".format(
+                s, r["q1_pos_rate"] * 100, r["q2_pos_rate"] * 100,
+                r["q_min_pos_rate"] * 100))
 
     print("  top_by_Q:")
     for s, cnt in sorted(top_counts.items(), key=lambda x: -x[1]):
         print("    {}: {}/{} ({:.0f}%)".format(
             s, cnt, len(groups), cnt / len(groups) * 100))
+
+    print("  top_by_return:")
+    for s, cnt in sorted(final_rm["top_by_return"].items(), key=lambda x: -x[1]):
+        print("    {}: {}/{} ({:.0f}%)".format(
+            s, cnt, len(groups), cnt / len(groups) * 100))
+    align_n, align_tot, align_pct = final_rm["top_alignment"]
+    print("  top_alignment_with_return: {}/{} ({:.1f}%)".format(
+        align_n, align_tot, align_pct))
+    pa_n, pa_tot, pa_pct = final_rm["pairwise_agreement"]
+    print("  pairwise_return_agreement: {}/{} ({:.1f}%)".format(
+        pa_n, pa_tot, pa_pct))
 
     # Save
     save_dict = {
@@ -579,6 +811,10 @@ def main():
         "seed": args.seed,
         "bc_source": args.bc_source,
         "bad_sources": bad_sources,
+        "ranking_mode": args.ranking_mode,
+        "return_margin_eps": args.return_margin_eps,
+        "zero_rank_weight": args.zero_rank_weight,
+        "regression_mode": args.regression_mode,
         "n_groups": len(groups),
         "metadata": "Offline critic calibration from multistep return labels",
     }
