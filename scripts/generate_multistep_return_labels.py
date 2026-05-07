@@ -163,6 +163,29 @@ def build_groups(d):
 
 
 # =============================================================================
+# Exclude seen groups from previous label file
+# =============================================================================
+def load_exclude_group_keys(path):
+    if path is None:
+        return set()
+    if not os.path.exists(path):
+        raise FileNotFoundError("exclude_labels_path not found: {}".format(path))
+    data = np.load(path, allow_pickle=False)
+    required = ["group_episode_id", "group_base_step_id", "init_attitude_deg"]
+    for k in required:
+        if k not in data.files:
+            raise ValueError("exclude labels missing field: {}".format(k))
+    keys = set()
+    for i in range(len(data["group_episode_id"])):
+        keys.add((
+            int(data["group_episode_id"][i]),
+            int(data["group_base_step_id"][i]),
+            float(data["init_attitude_deg"][i]),
+        ))
+    return keys
+
+
+# =============================================================================
 # Output safety (Windows + absolute path compatible)
 # =============================================================================
 def is_protected(path):
@@ -245,6 +268,14 @@ def parse_args():
         help="Comma-separated action sources to evaluate",
     )
     parser.add_argument(
+        "--exclude_labels_path", type=str, default=None,
+        help=(
+            "Optional npz with previously generated labels; groups matching "
+            "(group_episode_id, group_base_step_id, init_attitude_deg) will be "
+            "excluded from sampling."
+        ),
+    )
+    parser.add_argument(
         "--dry_run", action="store_true",
         help="Only print plan, do not execute rollouts or write files",
     )
@@ -278,6 +309,8 @@ def main():
     print("  max_gimbal_rate: {}".format(args.max_gimbal_rate))
     print("  seed:            {}".format(args.seed))
     print("  action_sources:  {}".format(action_sources))
+    print("  exclude_labels:  {}".format(
+        args.exclude_labels_path or "(none)"))
     print("  dry_run:         {}".format(args.dry_run))
     print("  force:           {}".format(args.force))
 
@@ -314,11 +347,24 @@ def main():
     gm, ug = build_groups(d)
     print("[Groups] {} complete groups (7 sources each)".format(len(gm)))
 
+    # Load exclude set
+    exclude_keys = load_exclude_group_keys(args.exclude_labels_path)
+    if args.exclude_labels_path is not None:
+        print("\n[Exclude] exclude_labels_path: {}".format(
+            args.exclude_labels_path))
+        print("[Exclude] exclude group keys: {}".format(len(exclude_keys)))
+
     # Sample groups
     rng = np.random.default_rng(args.seed)
     sampled = []
     for ang in angles:
-        ag = [g for g in gm if abs(ug[g]["iad"] - ang) < 0.1]
+        ag = []
+        for g in gm:
+            key = (int(ug[g]["ep"]), int(ug[g]["bs"]), float(ug[g]["iad"]))
+            if key in exclude_keys:
+                continue
+            if abs(float(ug[g]["iad"]) - ang) < 0.1:
+                ag.append(g)
         if not ag:
             print("  WARNING: no groups for angle={}".format(ang))
             continue
@@ -331,14 +377,29 @@ def main():
     print("[Sample] {} groups, {} branches".format(n_sampled, n_branches))
 
     if args.dry_run:
+        complete_key_set = set(
+            (int(ug[g]["ep"]), int(ug[g]["bs"]), float(ug[g]["iad"]))
+            for g in gm
+        )
+        excluded_in_pool = len(complete_key_set & exclude_keys)
+        remaining_groups = len(gm) - excluded_in_pool
+        per_angle = {}
+        for g in sampled:
+            a = float(ug[g]["iad"])
+            per_angle[a] = per_angle.get(a, 0) + 1
         print("\n[DRY RUN] Plan:")
-        print("  complete_groups: {}".format(len(gm)))
-        print("  sampled_groups:  {}".format(n_sampled))
-        print("  branches:        {}".format(n_branches))
-        print("  action_sources:  {}".format(action_sources))
-        print("  horizon:         {}".format(args.horizon))
-        print("  gamma:           {}".format(args.gamma))
-        print("  max_gimbal_rate: {}".format(args.max_gimbal_rate))
+        print("  complete_groups:  {}".format(len(gm)))
+        print("  exclude_groups:   {}".format(len(exclude_keys)))
+        print("  excluded_in_pool: {}".format(excluded_in_pool))
+        print("  remaining_groups: {}".format(remaining_groups))
+        print("  sampled_groups:   {}".format(n_sampled))
+        print("  branches:         {}".format(n_branches))
+        print("  action_sources:   {}".format(action_sources))
+        print("  horizon:          {}".format(args.horizon))
+        print("  gamma:            {}".format(args.gamma))
+        print("  max_gimbal_rate:  {}".format(args.max_gimbal_rate))
+        for a in sorted(per_angle):
+            print("  sampled_angle_{}: {}".format(a, per_angle[a]))
         print("  No rollouts executed. No files written.")
         sys.exit(0)
 
