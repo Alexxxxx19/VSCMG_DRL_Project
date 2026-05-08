@@ -69,7 +69,9 @@ def generate_run_name(train_cfg: TrainConfig, agent_cfg: AgentConfig, reward_cfg
 
 def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
                     agent_cfg: AgentConfig, reward_cfg: RewardConfig,
-                    reward_norm_cfg, actor_init_path: str | None = None):
+                    reward_norm_cfg,
+                    actor_init_path: str | None = None,
+                    critic_init_path: str | None = None):
     """保存实验配置到 JSON"""
     version = get_run_version_label()
     # 使用实际 env config（已被 CLI 覆盖）
@@ -86,6 +88,7 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
         "max_wheel_accel": _env_cfg.max_wheel_accel,
         "action_mode": _env_cfg.action_mode,
         "actor_init_path": actor_init_path,
+        "critic_init_path": critic_init_path,
         "init_attitude_range_deg": [
             _env_cfg.randomization.init_attitude_range.low,
             _env_cfg.randomization.init_attitude_range.high,
@@ -194,6 +197,38 @@ def load_actor_weights(agent, actor_init_path, expected_action_dim, device):
     agent.target_actor.load_state_dict(actor_sd, strict=True)
 
 
+def load_critic_weights_from_calibrated(agent, calibrated_ckpt_path, device):
+    """
+    Load critic weights from an offline calibrated critic checkpoint.
+
+    This loads only:
+    - critic_1
+    - critic_2
+    - target_critic_1
+    - target_critic_2
+
+    It does not load actor weights and does not load optimizer states.
+    """
+    ck = torch.load(calibrated_ckpt_path, map_location=device)
+
+    required_keys = [
+        "critic_1_state_dict",
+        "critic_2_state_dict",
+        "target_critic_1_state_dict",
+        "target_critic_2_state_dict",
+    ]
+    for k in required_keys:
+        if k not in ck:
+            raise KeyError(f"Missing required key in calibrated critic checkpoint: {k}")
+
+    agent.critic_1.load_state_dict(ck["critic_1_state_dict"], strict=True)
+    agent.critic_2.load_state_dict(ck["critic_2_state_dict"], strict=True)
+    agent.target_critic_1.load_state_dict(ck["target_critic_1_state_dict"], strict=True)
+    agent.target_critic_2.load_state_dict(ck["target_critic_2_state_dict"], strict=True)
+
+    return ck
+
+
 def parse_args():
     """
     解析命令行参数（CLI 优先级高于 train_config 默认值）
@@ -275,6 +310,14 @@ def parse_args():
     # --- Actor 初始化路径（BC-init TD3） ---
     parser.add_argument("--actor_init_path", type=str, default=None,
                         help="从指定路径加载 actor 权重初始化 TD3 actor（BC-init 用途）")
+
+    # --- Critic 初始化路径（离线校准 critic） ---
+    parser.add_argument(
+        "--critic_init_path",
+        type=str,
+        default=None,
+        help="Path to calibrated critic checkpoint for initializing critic_1/2 and target_critic_1/2 only.",
+    )
 
     # --- Replay Prefill ---
     parser.add_argument("--replay_prefill_path", type=str, default=None,
@@ -680,6 +723,23 @@ if __name__ == "__main__":
         )
 
     # ============================================================================
+    # 第四步 b.2：CriticInit — 从���线校准 critic 加载权重
+    # ============================================================================
+    if args.critic_init_path is not None:
+        _critic_ckpt = load_critic_weights_from_calibrated(
+            agent, args.critic_init_path, agent_cfg.device
+        )
+        print(f"[CriticInit] critic_1/2 and target_critic_1/2 initialized from: {args.critic_init_path}")
+        print(
+            "[CriticInit] ranking_mode={}, regression_mode={}, steps={}, n_groups={}".format(
+                _critic_ckpt.get("ranking_mode"),
+                _critic_ckpt.get("regression_mode"),
+                _critic_ckpt.get("steps"),
+                _critic_ckpt.get("n_groups"),
+            )
+        )
+
+    # ============================================================================
     # 第四步 c：ReplayBuffer Prefill
     # ============================================================================
     if train_cfg.replay_prefill_path is not None:
@@ -726,7 +786,8 @@ if __name__ == "__main__":
     save_run_config(
         model_dir, run_name, train_cfg, agent_cfg,
         reward_cfg, reward_norm_cfg,
-        actor_init_path=args.actor_init_path
+        actor_init_path=args.actor_init_path,
+        critic_init_path=args.critic_init_path,
     )
 
     # ============================================================================
