@@ -172,6 +172,7 @@ class RewardConfig:
     w_gimbal_act: float = 0.00  # 框架动作正则（Stage A 关闭）
     w_wheel_act:  float = 0.00  # 飞轮动作正则（Stage A 关闭）
     reward_scale: float = 300.0  # reward 全局缩放因子
+    w_att_progress: float = 0.00  # 姿态误差 progress 奖励（默认关闭，向后兼容）
 
 
 # =============================================================================
@@ -204,7 +205,7 @@ class VSCMGEnv(gym.Env):
 
     metadata = {'render_modes': []}
 
-    def __init__(self, config: VSCMGEnvConfig = None):
+    def __init__(self, config: VSCMGEnvConfig = None, reward_cfg: "RewardConfig" = None):
         """
         初始化 VSCMG 环境
 
@@ -212,6 +213,8 @@ class VSCMGEnv(gym.Env):
             config: VSCMGEnvConfig 实例。
                     若为 None，使用 make_default_config()（所有随机化关闭 = v1.0 行为）。
                     传入后作为永久基线配置（self.cfg），不会被 reset 污染。
+            reward_cfg: RewardConfig 实例。若为 None，使用默认 RewardConfig()，
+                        保持旧行为（w_att_progress=0.0）。
         """
         super().__init__()
         self.cfg = config if config is not None else make_default_config()
@@ -249,9 +252,12 @@ class VSCMGEnv(gym.Env):
         # 缓存上一步框架角速度指令
         self._delta_dot_cache = np.zeros(4)
 
+        # 缓存上一步 normalized attitude_cost（用于 progress reward）
+        self._attitude_cost_prev = 0.0
+
         # ---- reward 归一化配置（v1.0 P1 方案）----
         self.reward_norm_cfg = RewardNormalizationConfig()
-        self.reward_cfg = RewardConfig()
+        self.reward_cfg = reward_cfg if reward_cfg is not None else RewardConfig()
 
     # =======================================================================
     # 内部辅助方法
@@ -384,6 +390,12 @@ class VSCMGEnv(gym.Env):
         self.current_step = 0
         self._delta_dot_cache = np.zeros(4)
 
+        # 初始化 progress reward 缓存：当前姿态误差的 normalized attitude_cost
+        q_err_init = compute_orientation_error_quaternion(self.q, self.q_target)
+        sigma_err_init = orientation_error_quaternion_to_sigma_err(q_err_init)
+        sigma_err_sq_init = float(np.sum(sigma_err_init ** 2))
+        self._attitude_cost_prev = sigma_err_sq_init / (self.reward_norm_cfg.sigma_ref ** 2)
+
         obs = self._get_obs().astype(np.float32)
         return obs, {}
 
@@ -497,7 +509,22 @@ class VSCMGEnv(gym.Env):
             + gimbal_act_penalty
             + wheel_act_penalty
         )
-        reward = -raw_penalty / self.reward_cfg.reward_scale
+        base_reward = -raw_penalty / self.reward_cfg.reward_scale
+
+        # ---- attitude progress reward（normalized attitude_cost 差值，与 base 同尺度）----
+        attitude_cost_prev = float(self._attitude_cost_prev)
+        attitude_cost_now = float(attitude_cost)
+        attitude_progress = attitude_cost_prev - attitude_cost_now
+        attitude_progress_reward = (
+            self.reward_cfg.w_att_progress
+            * attitude_progress
+            / self.reward_cfg.reward_scale
+        )
+
+        reward = base_reward + attitude_progress_reward
+
+        # 更新 progress 缓存（供下一步使用）
+        self._attitude_cost_prev = attitude_cost_now
 
         self.current_step += 1
 
@@ -530,6 +557,12 @@ class VSCMGEnv(gym.Env):
             "reward_wheel_bias_penalty": float(wheel_bias_penalty),
             "reward_gimbal_act_penalty": float(gimbal_act_penalty),
             "reward_wheel_act_penalty": float(wheel_act_penalty),
+            # attitude progress reward（P53-2 新增）
+            "attitude_cost_prev": float(attitude_cost_prev),
+            "attitude_cost_now": float(attitude_cost_now),
+            "attitude_progress": float(attitude_progress),
+            "attitude_progress_reward": float(attitude_progress_reward),
+            "w_att_progress": float(self.reward_cfg.w_att_progress),
         }
         return obs, reward, terminated, truncated, info
 

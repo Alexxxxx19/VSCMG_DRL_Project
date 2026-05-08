@@ -131,6 +131,7 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "w_gimbal_act": reward_cfg.w_gimbal_act,
             "w_wheel_act": reward_cfg.w_wheel_act,
             "reward_scale": reward_cfg.reward_scale,
+            "w_att_progress": reward_cfg.w_att_progress,
         },
         "reward_normalization_config": {
             "sigma_ref": reward_norm_cfg.sigma_ref,
@@ -151,11 +152,13 @@ def make_env():
     顶层环境工厂函数（可序列化）
     用于 AsyncVectorEnv 实例化
     """
-    return VSCMGEnv(config=_env_config_override)
+    return VSCMGEnv(config=_env_config_override, reward_cfg=_reward_cfg_override)
 
 
 # 模块级环境配置覆盖（由 main 中 CLI 参数设置）
 _env_config_override = None
+# 模块级 reward 配置覆盖（由 main 中 CLI 参数设置）
+_reward_cfg_override = None
 
 
 def load_actor_weights(agent, actor_init_path, expected_action_dim, device):
@@ -306,6 +309,8 @@ def parse_args():
                         help="gimbal action penalty 权重（覆盖 reward_config 默认值）")
     parser.add_argument("--w_wheel_act", type=float, default=None,
                         help="wheel action penalty 权重（覆盖 reward_config 默认值）")
+    parser.add_argument("--w_att_progress", type=float, default=None,
+                        help="attitude progress reward 权重（覆盖 reward_config 默认值，默认 0.0 关闭）")
 
     # --- Actor 初始化路径（BC-init TD3） ---
     parser.add_argument("--actor_init_path", type=str, default=None,
@@ -639,6 +644,16 @@ if __name__ == "__main__":
         from configs.env_config import UniformRange
         _this._env_config_override.randomization.init_attitude_range = UniformRange(low=min_deg, high=max_deg)
 
+    # ---- reward_cfg 构建 + CLI 覆盖（必须在 make_env 调用之前注入到模块级 override）----
+    reward_cfg = RewardConfig()
+    if args.w_gimbal_act is not None:
+        reward_cfg.w_gimbal_act = args.w_gimbal_act
+    if args.w_wheel_act is not None:
+        reward_cfg.w_wheel_act = args.w_wheel_act
+    if args.w_att_progress is not None:
+        reward_cfg.w_att_progress = args.w_att_progress
+    _this._reward_cfg_override = reward_cfg
+
     # ============================================================================
     # 第二步：环境创建（state_dim / action_dim 运行时自动覆盖）
     # ============================================================================
@@ -771,12 +786,7 @@ if __name__ == "__main__":
     # ============================================================================
     # 第六步：生成 run_name 和模型目录
     # ============================================================================
-    reward_cfg = RewardConfig()  # 读取当前默认 reward 配置
-    # CLI 覆盖 reward 权重
-    if args.w_gimbal_act is not None:
-        reward_cfg.w_gimbal_act = args.w_gimbal_act
-    if args.w_wheel_act is not None:
-        reward_cfg.w_wheel_act = args.w_wheel_act
+    # reward_cfg 已在第一步 b 构建并应用 CLI 覆盖（注入到 _reward_cfg_override）
     reward_norm_cfg = RewardNormalizationConfig()
     run_name = generate_run_name(train_cfg, agent_cfg, reward_cfg)
     model_dir = os.path.join(train_cfg.checkpoint_dir, run_name)
@@ -949,6 +959,9 @@ if __name__ == "__main__":
             "reward_wheel_bias_cost": "RewardCost/wheel_bias",
             "reward_gimbal_action_cost": "RewardCost/gimbal_action",
             "reward_wheel_action_cost": "RewardCost/wheel_action",
+            "attitude_cost_prev": "RewardCost/attitude_cost_prev",
+            "attitude_cost_now": "RewardCost/attitude_cost_now",
+            "attitude_progress": "RewardCost/attitude_progress",
         }
         penalty_keys = {
             "reward_att_penalty": "RewardPenalty/attitude",
@@ -960,6 +973,8 @@ if __name__ == "__main__":
         }
         reward_keys = {
             "reward_total": "Reward/reward_total",
+            "attitude_progress_reward": "Reward/reward_attitude_progress",
+            "w_att_progress": "Reward/w_att_progress",
         }
 
         for info_key, tag in {**cost_keys, **penalty_keys, **reward_keys}.items():

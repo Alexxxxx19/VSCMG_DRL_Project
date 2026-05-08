@@ -1,5 +1,60 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [v0.5.18-debug-roadmap-11] - 2026-05-08
+
+### 调试检查点说明
+
+- 这是个人研究用途的 debug tag，不是正式稳定发布版。
+- 当前仍处于 debug 阶段，不是 v1.0 验收阶段。
+
+### 主要修改
+
+- 新增 normalized attitude progress reward（P53-2）。
+- `RewardConfig` 新增 `w_att_progress: float = 0.00`（默认关闭，向后兼容）。
+- `VSCMGEnv` 新增 `self._attitude_cost_prev` 缓存（每 episode step 更新）。
+- `reset()` 末尾初始化 `_attitude_cost_prev`。
+- `step()` 中计算：
+  - `attitude_progress = attitude_cost_prev - attitude_cost_now`
+  - `progress_reward = w_att_progress * attitude_progress / reward_scale`
+  - `reward = base_reward + progress_reward`
+- `info` 新增：`attitude_cost_prev`、`attitude_cost_now`、`attitude_progress`、`attitude_progress_reward`、`w_att_progress`。
+- `train.py` 新增 `--w_att_progress` CLI 参数（注入到 `_reward_cfg_override`）。
+- TensorBoard 新增：`RewardCost/attitude_cost_prev`、`RewardCost/attitude_cost_now`、`RewardCost/attitude_progress`、`Reward/reward_attitude_progress`、`Reward/w_att_progress`。
+- `run_config.json` 新增 `w_att_progress` 记录。
+
+### P53-2 实验结果
+
+训练配置（与 corrected A/B 完全一致，唯一新增 `w_att_progress=0.5`）：
+- `max_steps=5000, start_steps=2000, update_every=50, update_times=1, seed=42, gamma=0.997, max_gimbal_rate=0.5, gimbal_only`
+
+训练结果：
+- 无 NaN / crash / shape mismatch
+- `best_ep_reward=-2.77 @ step 999`（早期收敛，但后续 episode reward 恶化）
+- `run_config.json` 中 `w_att_progress=0.5` 正确记录
+- TensorBoard 记录所有 attitude_progress 相关 tags
+
+Rollout 验证（1000-step, init_theta=10°, deterministic actor, w_att_progress=0.5）:
+- Final theta: **87.82°**（与 A 85.45° / B 75.24° 相近，仍发散）
+- Cumulative reward: **-1609.42**（优于 A -1681.2 / B -1671.0）
+- Mean action_abs: **0.2015**（接近 A 0.197，优于 B 0.313）
+- frac_dtheta_pos: **0.677**（67.7% 时间 theta 在增长，即发散）
+
+### 分析结论
+
+Normalized progress reward 在 5k 短训练 + seed=42 条件下：
+- reward 曲线 / cumulative reward 优于 A/B（说明 progress reward 在 reward 维度有贡献）
+- 但 rollout theta 仍发散到 87.82°（说明 progress reward 未改变 actor 行动模式）
+- 说明 5k steps 不足以让 actor 学到抑制发散的能力
+- progress reward 可能需要配合更长训练（20k+）才能看到 theta 收敛效果
+- 当前 rollout 验证显示 progress reward 的影响被 roll-in random actions 稀释
+
+### 未修改内容
+
+- 没有修改 PyramidVSCMG 几何公式
+- 没有修改 TD3 update / loss 逻辑
+- 没有修改 actor/critic 网络结构
+- 没有修改 critic_init_path 逻辑
+
 ## [v0.5.18-debug-bc-reg] - 2026-04-27
 
 ### 调试检查点说明
