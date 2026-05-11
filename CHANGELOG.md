@@ -1,5 +1,70 @@
 # VSCMG DRL 控制系统迭代日志
 
+## [Unreleased] - P57 debug node: senior reward branch & deterministic eval checkpointing
+
+### 调试检查点说明
+
+- 这是个人研究用途的 debug 节点，不是正式稳定发布版。
+- 记录 P57 senior_inspired reward 支线实验与 deterministic eval checkpoint selection 机制。
+
+### P57-1e: senior_inspired reward 接入
+
+- 新增 opt-in `reward_mode="senior_inspired"`（commit 80ccde3）。
+- `default` reward 不变，`senior_inspired` 使用 progress-only 结构。
+- 不使用 per-step r2 near-goal bonus（`senior_r2=0.0`）。
+- sigma norm progress 计算：`progress = max(0, previous_sigma_norm - current_sigma_norm)`。
+- 推荐默认参数：
+  - `w_senior_control=0.1`
+  - `w_senior_progress=150.0`
+  - `senior_tau_ref=50.0`
+
+### P57-2 / P57-2d: 修正结论
+
+- 早期 5k A/B 不足以判断收敛。
+- 实际 `update_times=1`（不是 50），5k 约只有 30 次 actor update。
+- `best_episode_reward.pth` 可能被 start_steps 随机探索污染。
+- 后续选模不应主要依赖 `best_episode_reward.pth`。
+
+### deterministic eval checkpoint selection 机制
+
+- 新增 `--det_eval_interval`（默认 0，关闭，不影响原训练流程）。
+- 新增 `--det_eval_episodes`（每个角度评估 episode 数，默认 3）。
+- 新增 `--det_eval_max_steps`（每个 episode 最大步数，默认 1000）。
+- 固定评估角度 `[10, 20, 30, 45]` 度，做无噪声 deterministic actor rollout。
+- `eval_score = -mean_final_theta_deg`（越小 = final theta 越小 = 越好）。
+- 保存 `best_deterministic_eval.pth`（score 严格递增时保存）。
+- 记录 `DetEval/*` TensorBoard 标量（eval_score / mean_final_theta_deg / mean_theta_improvement / mean_omega_final / max_omega_max / mean_action_abs_mean / mean_action_sat_rate / mean_cumulative_reward / mean_nan_count / best_eval_score / best_eval_step）。
+- checkpoint 包含 actor/critic/target 全部 6 个 state_dict + global_step + eval_score + eval_metrics + reward_mode + det_eval 参数。
+- 目的：判断 actor 自身真实控制能力，避免被随机探索 episode reward 误导。
+
+### P57-2f: 10k A/B 当前判断
+
+- **senior_inspired reward 对 critic loss 更友好、更稳定**：B 组 Critic_1 loss 从 0.052 稳定到 0.013，A 组从 0.036 爆炸到 53.7。
+- **但 deterministic rollout 没有显示出可靠姿态收敛趋势**：
+  - A: final_theta 26.3 → 28.4 → 38.1 → 29.3°（恶化后略反弹）
+  - B: final_theta 26.3 → 28.2 → 40.4 → 28.8°（几乎相同的恶化模式）
+  - 两组 theta_improvement 始终为负，actor 把姿态推坏。
+- **actor 仍未把稳定 critic 转化为有效控制策略**。
+- B 组出现 actor collapse 信号（`is_actor_collapsed=1`，`action_abs_mean` 降至 0.034）。
+- **不建议继续 P57 senior reward 支线长训**。
+
+### 保守结论
+
+- 保留 deterministic eval 机制（向后兼容，默认关闭）。
+- P57 senior reward 支线暂停——reward 设计不是当前瓶颈。
+- 不继续单纯加长训练。
+- 核心问题：**actor 为什么无法利用 critic 学出有效 VSCMG 控制动作**。
+- 下一步应回到 TD3 actor/Q landscape 诊断主线：actor update 稳定性、BC/oracle/residual policy、exploration 策略。
+
+### 未修改内容
+
+- 没有修改 PyramidVSCMG 几何公式。
+- 没有修改 TD3 update / loss 逻辑。
+- 没有修改 actor/critic 网络结构。
+- 没有修改 env dynamics / 物理参数。
+- 没有修改 ReplayBuffer。
+- 没有修改 `default` reward。
+
 ## [v0.5.18-debug-roadmap-11] - 2026-05-08
 
 ### 调试检查点说明

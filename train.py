@@ -72,7 +72,10 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
                     agent_cfg: AgentConfig, reward_cfg: RewardConfig,
                     reward_norm_cfg,
                     actor_init_path: str | None = None,
-                    critic_init_path: str | None = None):
+                    critic_init_path: str | None = None,
+                    det_eval_interval: int = 0,
+                    det_eval_episodes: int = 3,
+                    det_eval_max_steps: int = 1000):
     """保存实验配置到 JSON"""
     version = get_run_version_label()
     # 使用实际 env config（已被 CLI 覆盖）
@@ -155,6 +158,13 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "wheel_bias_ref": reward_norm_cfg.wheel_bias_ref,
             "gimbal_action_scale": reward_norm_cfg.gimbal_action_scale,
             "wheel_action_scale": reward_norm_cfg.wheel_action_scale,
+        },
+        "deterministic_eval": {
+            "det_eval_interval": det_eval_interval,
+            "det_eval_episodes": det_eval_episodes,
+            "det_eval_max_steps": det_eval_max_steps,
+            "eval_angles_deg": [10, 20, 30, 45],
+            "eval_score": "-mean_final_theta_deg",
         },
     }
 
@@ -319,6 +329,14 @@ def parse_args():
                         help="BC regularization 权重（覆盖 agent_config 默认值，0=关闭）")
     parser.add_argument("--bc_reg_steps", type=int, default=None,
                         help="BC reg 只在前 N 次 actor update 内生效（覆盖 agent_config 默认值，0=全期）")
+
+    # --- Deterministic Eval Checkpoint Selection ---
+    parser.add_argument("--det_eval_interval", type=int, default=0,
+                        help="每N步运行一次 deterministic eval（0=关闭，默认关闭）")
+    parser.add_argument("--det_eval_episodes", type=int, default=3,
+                        help="deterministic eval 每个角度评估 episode 数（默认3）")
+    parser.add_argument("--det_eval_max_steps", type=int, default=1000,
+                        help="deterministic eval 每个 episode 最大步数（默认1000）")
 
     # --- Reward 权重参数 ---
     parser.add_argument("--w_gimbal_act", type=float, default=None,
@@ -819,6 +837,9 @@ if __name__ == "__main__":
         reward_cfg, reward_norm_cfg,
         actor_init_path=args.actor_init_path,
         critic_init_path=args.critic_init_path,
+        det_eval_interval=args.det_eval_interval,
+        det_eval_episodes=args.det_eval_episodes,
+        det_eval_max_steps=args.det_eval_max_steps,
     )
 
     # ============================================================================
@@ -839,6 +860,8 @@ if __name__ == "__main__":
     best_step = None
     _latest_det_sat_rate = 0.0
     _latest_det_action_std = 1.0
+    best_det_eval_score = -1e9
+    best_det_eval_step = None
     train_start_time = _time_module.time()
     episode_rewards = np.zeros(train_cfg.num_envs, dtype=np.float32)
     episode_lengths = np.zeros(train_cfg.num_envs, dtype=np.int32)
@@ -877,6 +900,91 @@ if __name__ == "__main__":
             if _latest_det_action_std < 0.05:
                 print(f"  >> [PolicyHealth WARNING] action_std={_latest_det_action_std:.4f} < 0.05 — actor may be collapsed!")
         _episode_summary(ep_reward, ep_step, saved, path)
+
+    # ============================================================================
+    # Deterministic Policy Eval（用于可靠 checkpoint 选择）
+    # ============================================================================
+
+    def _theta_deg_from_obs(obs):
+        """从 observation 计算等效旋转角（度）"""
+        sigma = np.asarray(obs[:3], dtype=np.float64)
+        return float(np.degrees(4.0 * np.arctan(np.linalg.norm(sigma))))
+
+    def _rollout_single(env, obs, actor, device, max_steps):
+        """单 episode deterministic rollout，返回物理指标"""
+        cum_reward = 0.0
+        action_abs_vals = []
+        action_sat_vals = []
+        omega_vals = []
+        theta_start = _theta_deg_from_obs(obs)
+        for step in range(max_steps):
+            with torch.no_grad():
+                state_t = torch.FloatTensor(obs).to(device).unsqueeze(0)
+                action = actor(state_t).cpu().numpy().squeeze()
+            obs, reward, terminated, truncated, info = env.step(action)
+            cum_reward += float(reward) if not np.isnan(reward) else 0.0
+            action_abs_vals.append(float(np.mean(np.abs(action))))
+            action_sat_vals.append(float(np.mean(np.abs(action) >= 0.95)))
+            omega_vals.append(float(np.linalg.norm(obs[3:6])))
+            if terminated or truncated:
+                break
+        final_theta = _theta_deg_from_obs(obs)
+        return {
+            "cumulative_reward": cum_reward,
+            "final_theta_deg": final_theta,
+            "theta_improvement": theta_start - final_theta,
+            "omega_final": float(np.linalg.norm(obs[3:6])),
+            "omega_max": max(omega_vals) if omega_vals else float("nan"),
+            "mean_action_abs_mean": float(np.mean(action_abs_vals)) if action_abs_vals else float("nan"),
+            "mean_action_sat_rate": float(np.mean(action_sat_vals)) if action_sat_vals else float("nan"),
+            "nan_count": int(sum(1 for v in [cum_reward] if np.isnan(v))),
+            "terminated": 1 if terminated else 0,
+            "truncated": 1 if truncated else 0,
+        }
+
+    def evaluate_deterministic_policy(agent, reward_cfg, det_eval_episodes, det_eval_max_steps):
+        """多角度 deterministic rollout 评估，返回平均指标和 eval_score"""
+        from envs.vscmg_env import VSCMGEnv
+        eval_angles = [10, 20, 30, 45]
+        all_records = []
+        for angle_deg in eval_angles:
+            for seed_idx in range(det_eval_episodes):
+                seed = 42 + seed_idx
+                env = VSCMGEnv(config=_env_config_override, reward_cfg=reward_cfg)
+                obs, _ = env.reset(
+                    seed=seed,
+                    options={"init_attitude_deg": float(angle_deg)}
+                )
+                rec = _rollout_single(env, obs, agent.actor, train_cfg.device, det_eval_max_steps)
+                rec["angle_deg"] = angle_deg
+                rec["seed"] = seed
+                all_records.append(rec)
+                env.close()
+        import statistics
+        mean_reward = statistics.mean(r["cumulative_reward"] for r in all_records)
+        mean_final_theta = statistics.mean(r["final_theta_deg"] for r in all_records)
+        mean_theta_imp = statistics.mean(r["theta_improvement"] for r in all_records)
+        mean_omega_final = statistics.mean(r["omega_final"] for r in all_records)
+        max_omega_max = max(r["omega_max"] for r in all_records)
+        mean_action_abs = statistics.mean(r["mean_action_abs_mean"] for r in all_records)
+        mean_sat_rate = statistics.mean(r["mean_action_sat_rate"] for r in all_records)
+        mean_nan = statistics.mean(r["nan_count"] for r in all_records)
+        mean_term = statistics.mean(r["terminated"] for r in all_records)
+        mean_trunc = statistics.mean(r["truncated"] for r in all_records)
+        eval_score = -mean_final_theta
+        return {
+            "eval_score": eval_score,
+            "mean_cumulative_reward": mean_reward,
+            "mean_final_theta_deg": mean_final_theta,
+            "mean_theta_improvement": mean_theta_imp,
+            "mean_omega_final": mean_omega_final,
+            "max_omega_max": max_omega_max,
+            "mean_action_abs_mean": mean_action_abs,
+            "mean_action_sat_rate": mean_sat_rate,
+            "mean_nan_count": mean_nan,
+            "terminated_rate": mean_term,
+            "truncated_rate": mean_trunc,
+        }
 
     # ============================================================================
     # 训练主循环（全局步数驱动）
@@ -1085,6 +1193,69 @@ if __name__ == "__main__":
                 writer.add_scalar("Loss/Critic_1", c1_loss, global_step)
                 writer.add_scalar("Loss/Critic_2", c2_loss, global_step)
                 writer.flush()
+
+        # --- Deterministic Eval（checkpoint 选择用） ---
+        if (
+            args.det_eval_interval > 0
+            and global_step >= train_cfg.start_steps
+            and global_step % args.det_eval_interval == 0
+        ):
+            eval_metrics = evaluate_deterministic_policy(
+                agent=agent,
+                reward_cfg=reward_cfg,
+                det_eval_episodes=args.det_eval_episodes,
+                det_eval_max_steps=args.det_eval_max_steps,
+            )
+            eval_score = eval_metrics["eval_score"]
+
+            writer.add_scalar("DetEval/eval_score", eval_score, global_step)
+            writer.add_scalar("DetEval/mean_final_theta_deg", eval_metrics["mean_final_theta_deg"], global_step)
+            writer.add_scalar("DetEval/mean_theta_improvement", eval_metrics["mean_theta_improvement"], global_step)
+            writer.add_scalar("DetEval/mean_omega_final", eval_metrics["mean_omega_final"], global_step)
+            writer.add_scalar("DetEval/max_omega_max", eval_metrics["max_omega_max"], global_step)
+            writer.add_scalar("DetEval/mean_action_abs_mean", eval_metrics["mean_action_abs_mean"], global_step)
+            writer.add_scalar("DetEval/mean_action_sat_rate", eval_metrics["mean_action_sat_rate"], global_step)
+            writer.add_scalar("DetEval/mean_cumulative_reward", eval_metrics["mean_cumulative_reward"], global_step)
+            writer.add_scalar("DetEval/mean_nan_count", eval_metrics["mean_nan_count"], global_step)
+            writer.flush()
+
+            print(
+                f"[DetEval] step={global_step}"
+                f" | score={eval_score:.4f}"
+                f" | final_theta={eval_metrics['mean_final_theta_deg']:.4f}"
+                f" | theta_improvement={eval_metrics['mean_theta_improvement']:.4f}"
+            )
+
+            # --- 保存 best deterministic eval checkpoint ---
+            if eval_score > best_det_eval_score:
+                best_det_eval_score = eval_score
+                best_det_eval_step = global_step
+                best_det_path = os.path.join(model_dir, "best_deterministic_eval.pth")
+                torch.save({
+                    "actor_state_dict": agent.actor.state_dict(),
+                    "critic_1_state_dict": agent.critic_1.state_dict(),
+                    "critic_2_state_dict": agent.critic_2.state_dict(),
+                    "target_actor_state_dict": agent.target_actor.state_dict(),
+                    "target_critic_1_state_dict": agent.target_critic_1.state_dict(),
+                    "target_critic_2_state_dict": agent.target_critic_2.state_dict(),
+                    "global_step": global_step,
+                    "eval_score": eval_score,
+                    "eval_metrics": eval_metrics,
+                    "det_eval_metrics": eval_metrics,
+                    "det_eval_interval": args.det_eval_interval,
+                    "det_eval_episodes": args.det_eval_episodes,
+                    "det_eval_max_steps": args.det_eval_max_steps,
+                    "reward_mode": reward_cfg.reward_mode,
+                }, best_det_path)
+                writer.add_scalar("DetEval/best_eval_score", best_det_eval_score, global_step)
+                writer.add_scalar("DetEval/best_eval_step", best_det_eval_step, global_step)
+                writer.flush()
+                print(
+                    f"[SaveSummary] type=best_deterministic_eval | run={run_name}"
+                    f" | step={global_step} | score={best_det_eval_score:.4f}"
+                    f" | final_theta={eval_metrics['mean_final_theta_deg']:.4f}"
+                    f" | path={best_det_path}"
+                )
 
     # ============================================================================
     # 训练结束
