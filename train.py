@@ -41,6 +41,7 @@ import torch
 import numpy as np
 from torch.utils.tensorboard import SummaryWriter
 from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
+from gymnasium.vector.vector_env import AutoresetMode
 
 from envs.vscmg_env import VSCMGEnv, RewardConfig, RewardNormalizationConfig
 from agents.td3_agent import TD3, ReplayBuffer
@@ -63,7 +64,7 @@ def generate_run_name(train_cfg: TrainConfig, agent_cfg: AgentConfig, reward_cfg
     gr_str = f"gr{_env_cfg.max_gimbal_rate}"
     gamma_str = f"g{agent_cfg.gamma}"
     action_mode_str = "gimbal_only" if _env_cfg.action_mode == "gimbal_only" else "full8d"
-    reward_summary = f"att{reward_cfg.w_att}_om{reward_cfg.w_omega}_wb{reward_cfg.w_wheel_bias}_ga{reward_cfg.w_gimbal_act}_wa{reward_cfg.w_wheel_act}"
+    reward_summary = f"att{reward_cfg.w_att}_om{reward_cfg.w_omega}_wb{reward_cfg.w_wheel_bias}_ga{reward_cfg.w_gimbal_act}_wa{reward_cfg.w_wheel_act}_pgr{int(reward_cfg.w_att_progress)}"
     return f"{version}_{timestamp}_envs{train_cfg.num_envs}_seed{train_cfg.seed}_{gr_str}_{gamma_str}_{action_mode_str}_{reward_summary}"
 
 
@@ -125,6 +126,7 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "bc_reg_steps": agent_cfg.bc_reg_steps,
         },
         "reward_config": {
+            "reward_mode": reward_cfg.reward_mode,
             "w_att": reward_cfg.w_att,
             "w_omega": reward_cfg.w_omega,
             "w_wheel_bias": reward_cfg.w_wheel_bias,
@@ -132,6 +134,20 @@ def save_run_config(model_dir: str, run_name: str, train_cfg: TrainConfig,
             "w_wheel_act": reward_cfg.w_wheel_act,
             "reward_scale": reward_cfg.reward_scale,
             "w_att_progress": reward_cfg.w_att_progress,
+            "w_attitude_integral": reward_cfg.w_attitude_integral,
+            "w_attitude_time_weighted": reward_cfg.w_attitude_time_weighted,
+            "w_senior_omega_l1": reward_cfg.w_senior_omega_l1,
+            "w_senior_control": reward_cfg.w_senior_control,
+            "w_senior_goal": reward_cfg.w_senior_goal,
+            "senior_eps": reward_cfg.senior_eps,
+            "senior_sigma_goal_threshold": reward_cfg.senior_sigma_goal_threshold,
+            "senior_omega_goal_threshold": reward_cfg.senior_omega_goal_threshold,
+            "senior_sigma_unsafe": reward_cfg.senior_sigma_unsafe,
+            "senior_omega_unsafe": reward_cfg.senior_omega_unsafe,
+            "w_senior_unsafe": reward_cfg.w_senior_unsafe,
+            "senior_reward_scale": reward_cfg.senior_reward_scale,
+            "senior_tau_ref": reward_cfg.senior_tau_ref,
+            "w_senior_progress": reward_cfg.w_senior_progress,
         },
         "reward_normalization_config": {
             "sigma_ref": reward_norm_cfg.sigma_ref,
@@ -311,6 +327,9 @@ def parse_args():
                         help="wheel action penalty 权重（覆盖 reward_config 默认值）")
     parser.add_argument("--w_att_progress", type=float, default=None,
                         help="attitude progress reward 权重（覆盖 reward_config 默认值，默认 0.0 关闭）")
+    parser.add_argument("--reward_mode", type=str, default=None,
+                        choices=["default", "senior_inspired"],
+                        help="reward 模式：default（默认）或 senior_inspired（P57-1 学长结构 reward）")
 
     # --- Actor 初始化路径（BC-init TD3） ---
     parser.add_argument("--actor_init_path", type=str, default=None,
@@ -652,6 +671,8 @@ if __name__ == "__main__":
         reward_cfg.w_wheel_act = args.w_wheel_act
     if args.w_att_progress is not None:
         reward_cfg.w_att_progress = args.w_att_progress
+    if args.reward_mode is not None:
+        reward_cfg.reward_mode = args.reward_mode
     _this._reward_cfg_override = reward_cfg
 
     # ============================================================================
@@ -661,11 +682,11 @@ if __name__ == "__main__":
     env_fns = [make_env for _ in range(train_cfg.num_envs)]
     if train_cfg.num_envs == 1:
         print("[Tracer] 准备唤醒 1 个同步物理引擎...")
-        envs = SyncVectorEnv(env_fns)
+        envs = SyncVectorEnv(env_fns, autoreset_mode=AutoresetMode.DISABLED)
         print("[Tracer] 同步引擎唤醒成功！")
     else:
         print(f"[Tracer] 准备唤醒 {train_cfg.num_envs} 个并行物理引擎 (可能需等待10-30秒，请耐心)...")
-        envs = AsyncVectorEnv(env_fns)
+        envs = AsyncVectorEnv(env_fns, autoreset_mode=AutoresetMode.DISABLED)
         print("[Tracer] 并行引擎唤醒成功！")
 
     # 运行时自动覆盖 agent 维度（从 env 的 space 自动读取）
@@ -870,7 +891,6 @@ if __name__ == "__main__":
     print("[Tracer] 环境初态重置完毕，正在冲击主循环！")
 
     # 全局步数驱动主循环
-    _reset_envs: set = set()  # 延迟重置集合（完赛→先读后清）
     for global_step in range(0, train_cfg.total_steps, train_cfg.num_envs):
         # --- 心跳监测（仅在首个 Episode 落地前静默打印） ---
         if not first_episode_done and global_step > 0 and global_step % 2000 == 0:
@@ -991,18 +1011,11 @@ if __name__ == "__main__":
             episode_rewards[i] += rewards[i]
             episode_lengths[i] += 1
 
-            # 提取真实的下一状态（防止自动 reset 破坏 MDP 连贯性）
-            if done and isinstance(infos.get("final_observation"), (list, np.ndarray)):
-                real_next_state = infos["final_observation"][i]
-            else:
-                real_next_state = next_states[i]
+            # autoreset 已禁用：next_states[i] 即真实 terminal next_obs
+            real_next_state = next_states[i]
 
             # 存入 ReplayBuffer
             replay_buffer.push(states[i], actions[i], rewards[i], real_next_state, done)
-
-            # --- 延迟重置：在两个策略解析完成后才能清零 ---
-            if done:
-                _reset_envs.add(i)
 
         # --- 策略 1：infos["final_info"]（标准 Gymnasium 向量环境结构）---
         final_infos = infos.get("final_info")
@@ -1041,11 +1054,16 @@ if __name__ == "__main__":
                 writer.add_scalar("Global/Mean_Reward", mean_reward, global_step)
                 writer.flush()
 
-        # --- 统一延迟重置（在读完 episode_rewards/lengths 后才能清零）---
-        for i in _reset_envs:
-            episode_rewards[i] = 0.0
-            episode_lengths[i] = 0
-        _reset_envs.clear()
+        # --- 手动 reset done envs (autoreset_mode=DISABLED 要求) ---
+        done_mask = np.logical_or(dones, truncateds).astype(np.bool_)
+        if done_mask.any():
+            reset_obs, _ = envs.reset(options={"reset_mask": done_mask})
+            next_states[done_mask] = reset_obs[done_mask]
+            # 清零 done env 的 episode 累计
+            for i in range(train_cfg.num_envs):
+                if done_mask[i]:
+                    episode_rewards[i] = 0.0
+                    episode_lengths[i] = 0
 
         # --- 更新当前状态 ---
         states = next_states

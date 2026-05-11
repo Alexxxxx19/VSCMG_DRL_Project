@@ -165,14 +165,39 @@ class RewardConfig:
     仅保留姿态误差主项，关闭所有辅助 penalty：
     - w_omega = 0.00：角速度阻尼关闭（Stage A 专注姿态收敛）
     - w_gimbal_act = 0.00 / w_wheel_act = 0.00：动作正则关闭
+
+    reward_mode:
+    - "default": 使用原始 reward 计算（默认值，不改变任何行为）
+    - "senior_inspired": 使用 senior-inspired reward 公式（P57-1）
     """
+    reward_mode:  str   = "default"  # "default" | "senior_inspired"
     w_att:        float = 1.00  # 姿态误差主项
     w_omega:      float = 0.00  # 角速度阻尼（Stage A 关闭）
     w_wheel_bias: float = 0.00  # 飞轮偏置（Stage A 关闭）
     w_gimbal_act: float = 0.00  # 框架动作正则（Stage A 关闭）
     w_wheel_act:  float = 0.00  # 飞轮动作正则（Stage A 关闭）
     reward_scale: float = 300.0  # reward 全局缩放因子
-    w_att_progress: float = 0.00  # 姿态误差 progress 奖励（默认关闭，向后兼容）
+    # P53-3: w_att_progress 设为 900，使 progress 项在 5° large action 下 ratio≈23%，不超过 30%
+    w_att_progress: float = 900.0
+    # P53-3 新增：积分姿态误差项（默认关闭，不改变默认 reward 行为）
+    w_attitude_integral: float = 0.0
+    # P53-3 新增：后期加权姿态误差项（默认关闭，不改变默认 reward 行为）
+    w_attitude_time_weighted: float = 0.0
+
+    # ── P57-1: senior-inspired reward 参数（仅在 reward_mode="senior_inspired" 时生效）──
+    w_senior_omega_l1: float = 1.0       # omega L1 权重
+    w_senior_control: float = 0.1        # control 平方和权重（P57-1e: 从 1.0 调至 0.1）
+    w_senior_goal: float = 1.0           # near-goal bonus 权重（保留但 progress-only 不使用）
+    senior_eps: float = 0.01             # goal bonus 分母 epsilon（保留但 progress-only 不使用）
+    senior_sigma_goal_threshold: float = 0.03   # near-goal sigma 判据（保留用于诊断）
+    senior_omega_goal_threshold: float = 0.10   # near-goal omega 判据（保留用于诊断）
+    senior_sigma_unsafe: float = 1.0     # unsafe sigma 判据
+    senior_omega_unsafe: float = 4.0     # unsafe omega 判据
+    w_senior_unsafe: float = 10.0        # unsafe 惩罚权重
+    senior_reward_scale: float = 1.0     # senior-inspired reward 缩放
+    senior_tau_ref: float = 50.0         # tau_vscmg 归一化参考尺度
+    # P57-1e: progress-only variant（不使用 per-step r2 bonus）
+    w_senior_progress: float = 150.0     # progress 正向奖励权重
 
 
 # =============================================================================
@@ -254,6 +279,11 @@ class VSCMGEnv(gym.Env):
 
         # 缓存上一步 normalized attitude_cost（用于 progress reward）
         self._attitude_cost_prev = 0.0
+
+        # P53-3: 累计姿态误差积分（reset 时归零）
+        self._attitude_integral = 0.0
+        # P57-1e: senior progress reward cache（reset 时由 reset() 填充）
+        self._senior_sigma_norm_prev = 0.0
 
         # ---- reward 归一化配置（v1.0 P1 方案）----
         self.reward_norm_cfg = RewardNormalizationConfig()
@@ -390,11 +420,15 @@ class VSCMGEnv(gym.Env):
         self.current_step = 0
         self._delta_dot_cache = np.zeros(4)
 
+        # P53-3: 积分项归零
+        self._attitude_integral = 0.0
+
         # 初始化 progress reward 缓存：当前姿态误差的 normalized attitude_cost
         q_err_init = compute_orientation_error_quaternion(self.q, self.q_target)
         sigma_err_init = orientation_error_quaternion_to_sigma_err(q_err_init)
         sigma_err_sq_init = float(np.sum(sigma_err_init ** 2))
         self._attitude_cost_prev = sigma_err_sq_init / (self.reward_norm_cfg.sigma_ref ** 2)
+        self._senior_sigma_norm_prev = float(np.linalg.norm(sigma_err_init))  # P57-1e
 
         obs = self._get_obs().astype(np.float32)
         return obs, {}
@@ -521,7 +555,88 @@ class VSCMGEnv(gym.Env):
             / self.reward_cfg.reward_scale
         )
 
-        reward = base_reward + attitude_progress_reward
+        # ---- P53-3 新增：积分姿态误差项（默认权重=0，不改变默认行为）----
+        # 使用 dt 归一化累计，reset 时归零
+        attitude_integral_cost = float(self._attitude_integral)
+        attitude_integral_reward = (
+            self.reward_cfg.w_attitude_integral
+            * attitude_integral_cost
+            / self.reward_cfg.reward_scale
+        )
+
+        # ---- P53-3 新增：后期加权姿态误差项（默认权重=0，不改变默认行为）----
+        # 使用 current_step / max_episode_steps 归一化权重，reset 时重置
+        if self.episode_cfg.max_episode_steps > 0:
+            time_weight = self.current_step / self.episode_cfg.max_episode_steps
+        else:
+            time_weight = 0.0
+        attitude_time_weighted_cost = time_weight * attitude_cost
+        attitude_time_weighted_reward = (
+            self.reward_cfg.w_attitude_time_weighted
+            * attitude_time_weighted_cost
+            / self.reward_cfg.reward_scale
+        )
+
+        reward = base_reward + attitude_progress_reward + attitude_integral_reward + attitude_time_weighted_reward
+
+        # ---- P57-1: senior-inspired reward 分支 ----
+        senior_r1 = 0.0
+        senior_r2 = 0.0
+        senior_r3 = 0.0
+        senior_state_l1 = 0.0
+        senior_control_sq = 0.0
+        senior_near_goal = 0.0
+        senior_unsafe = 0.0
+        senior_progress = 0.0
+        senior_progress_reward = 0.0
+        senior_tau_norm = 0.0
+        senior_tau_ref = float(self.reward_cfg.senior_tau_ref)
+
+        if self.reward_cfg.reward_mode == "senior_inspired":
+            # sigma_err 已在 step 开头计算
+            sigma_l1 = float(np.sum(np.abs(sigma_err)))
+            omega_l1 = float(np.sum(np.abs(self.omega)))
+            senior_state_l1 = sigma_l1 + self.reward_cfg.w_senior_omega_l1 * omega_l1
+
+            # control_sq: 使用 VSCMG 输出力�� tau_vscmg 的平方和
+            tau_flat = np.asarray(tau_vscmg, dtype=np.float64).reshape(-1)
+            senior_tau_ref = max(float(self.reward_cfg.senior_tau_ref), 1e-12)
+            senior_tau_norm = float(np.linalg.norm(tau_flat))
+            senior_control_sq = float(np.sum((tau_flat / senior_tau_ref) ** 2))
+
+            senior_r1 = -senior_state_l1 - self.reward_cfg.w_senior_control * senior_control_sq
+
+            # near_goal: 整体姿态误差和角速度都低于阈值
+            sigma_norm = float(np.linalg.norm(sigma_err))
+            omega_norm = float(np.linalg.norm(self.omega))
+            senior_near_goal = 1.0 if (
+                sigma_norm <= self.reward_cfg.senior_sigma_goal_threshold
+                and omega_norm <= self.reward_cfg.senior_omega_goal_threshold
+            ) else 0.0
+
+            senior_r2 = 0.0  # P57-1e: 不使用 per-step near_goal bonus
+
+            # P57-1e: progress-only reward
+            senior_progress = max(0.0, float(self._senior_sigma_norm_prev) - sigma_norm)
+            senior_progress_reward = self.reward_cfg.w_senior_progress * senior_progress
+
+            # unsafe
+            senior_unsafe = 1.0 if (
+                float(np.max(np.abs(sigma_err))) >= self.reward_cfg.senior_sigma_unsafe
+                or float(np.max(np.abs(self.omega))) >= self.reward_cfg.senior_omega_unsafe
+            ) else 0.0
+
+            senior_r3 = -self.reward_cfg.w_senior_unsafe * senior_unsafe
+
+            reward = self.reward_cfg.senior_reward_scale * (
+                senior_r1 + senior_progress_reward + senior_r2 + senior_r3
+            )
+
+            # 更新 progress cache 供下一步使用
+            self._senior_sigma_norm_prev = sigma_norm
+
+        # 更新积分累计（供下一步使用）
+        self._attitude_integral += attitude_cost * self.episode_cfg.dt
 
         # 更新 progress 缓存（供下一步使用）
         self._attitude_cost_prev = attitude_cost_now
@@ -563,6 +678,29 @@ class VSCMGEnv(gym.Env):
             "attitude_progress": float(attitude_progress),
             "attitude_progress_reward": float(attitude_progress_reward),
             "w_att_progress": float(self.reward_cfg.w_att_progress),
+            # P53-3 新增：积分姿态误差项
+            "attitude_integral_cost": float(attitude_integral_cost),
+            "reward_attitude_integral": float(attitude_integral_reward),
+            "w_attitude_integral": float(self.reward_cfg.w_attitude_integral),
+            # P53-3 新增：后期加权姿态误差项
+            "attitude_time_weighted_cost": float(attitude_time_weighted_cost),
+            "reward_attitude_time_weighted": float(attitude_time_weighted_reward),
+            "w_attitude_time_weighted": float(self.reward_cfg.w_attitude_time_weighted),
+            "attitude_time_weight": float(time_weight),
+            # P57-1: senior-inspired reward breakdown
+            "reward_mode": self.reward_cfg.reward_mode,
+            "senior_r1": float(senior_r1),
+            "senior_r2": float(senior_r2),
+            "senior_r3": float(senior_r3),
+            "senior_state_l1": float(senior_state_l1),
+            "senior_control_sq": float(senior_control_sq),
+            "senior_tau_norm": float(senior_tau_norm),
+            "senior_tau_ref": float(senior_tau_ref),
+            "senior_near_goal": float(senior_near_goal),
+            "senior_unsafe": float(senior_unsafe),
+            "senior_progress": float(senior_progress),
+            "senior_progress_reward": float(senior_progress_reward),
+            "w_senior_progress": float(self.reward_cfg.w_senior_progress),
         }
         return obs, reward, terminated, truncated, info
 
